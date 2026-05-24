@@ -61,14 +61,20 @@ struct NativeRenderSettings {
     float sunIntensity;
     float sunAngularRadius;
     float ambientIntensity;
+};
+
+struct NativeMaterial {
     float albedoR;
     float albedoG;
     float albedoB;
+    int reflective;
+    float reflectivity;
 };
 
 struct LaunchParams {
     uchar4* image;
     float4* accumulation;
+    CUdeviceptr materials;
     unsigned int imageWidth;
     unsigned int imageHeight;
     Float3 cameraPosition;
@@ -90,6 +96,8 @@ struct HitGroupData {
     CUdeviceptr vertices;
     CUdeviceptr normals;
     CUdeviceptr indices;
+    CUdeviceptr triangleMaterialIndices;
+    CUdeviceptr materials;
 };
 
 struct TriangleIndices {
@@ -177,14 +185,20 @@ struct NativeRenderSettings {
     float sunIntensity;
     float sunAngularRadius;
     float ambientIntensity;
+};
+
+struct NativeMaterial {
     float albedoR;
     float albedoG;
     float albedoB;
+    int reflective;
+    float reflectivity;
 };
 
 struct LaunchParams {
     uchar4* image;
     float4* accumulation;
+    unsigned long long materials;
     unsigned int imageWidth;
     unsigned int imageHeight;
     Float3 cameraPosition;
@@ -206,6 +220,8 @@ struct HitGroupData {
     unsigned long long vertices;
     unsigned long long normals;
     unsigned long long indices;
+    unsigned long long triangleMaterialIndices;
+    unsigned long long materials;
 };
 
 struct TriangleIndices {
@@ -217,6 +233,7 @@ struct TriangleIndices {
 struct Payload {
     float3 hitPosition;
     float3 hitNormal;
+    int materialIndex;
     int hit;
 };
 
@@ -369,6 +386,10 @@ static __forceinline__ __device__ float3 SampleHemisphere(float3 normal, unsigne
         normal * sqrtf(fmaxf(0.0f, 1.0f - u1)));
 }
 
+static __forceinline__ __device__ float3 Reflect(float3 incident, float3 normal) {
+    return incident - normal * (2.0f * Dot(incident, normal));
+}
+
 static __forceinline__ __device__ float3 GetSkyColor(float3 direction) {
     if (params.settings.enableSky == 0) {
         return make_float3(0.0f, 0.0f, 0.0f);
@@ -385,6 +406,7 @@ static __forceinline__ __device__ int TraceOcclusion(float3 origin, float3 direc
     payload.hit = 0;
     payload.hitPosition = make_float3(0.0f, 0.0f, 0.0f);
     payload.hitNormal = make_float3(0.0f, 0.0f, 0.0f);
+    payload.materialIndex = -1;
 
     unsigned int payloadLow = static_cast<unsigned int>(reinterpret_cast<unsigned long long>(&payload));
     unsigned int payloadHigh = static_cast<unsigned int>(reinterpret_cast<unsigned long long>(&payload) >> 32);
@@ -419,6 +441,7 @@ extern "C" __global__ void __closesthit__ch() {
     const float3* vertices = reinterpret_cast<const float3*>(hitData->vertices);
     const float3* normals = reinterpret_cast<const float3*>(hitData->normals);
     const TriangleIndices* indices = reinterpret_cast<const TriangleIndices*>(hitData->indices);
+    const unsigned int* triangleMaterialIndices = reinterpret_cast<const unsigned int*>(hitData->triangleMaterialIndices);
 
     const unsigned int primitiveIndex = optixGetPrimitiveIndex();
     const TriangleIndices triangle = indices[primitiveIndex];
@@ -442,6 +465,7 @@ extern "C" __global__ void __closesthit__ch() {
     payload->hit = 1;
     payload->hitNormal = Normalize(facingNormal);
     payload->hitPosition = origin + direction * distance;
+    payload->materialIndex = static_cast<int>(triangleMaterialIndices[primitiveIndex]);
 }
 
 extern "C" __global__ void __raygen__rg() {
@@ -481,6 +505,7 @@ extern "C" __global__ void __raygen__rg() {
             payload.hit = 0;
             payload.hitPosition = make_float3(0.0f, 0.0f, 0.0f);
             payload.hitNormal = make_float3(0.0f, 0.0f, 0.0f);
+            payload.materialIndex = -1;
 
             unsigned int payloadLow = static_cast<unsigned int>(reinterpret_cast<unsigned long long>(&payload));
             unsigned int payloadHigh = static_cast<unsigned int>(reinterpret_cast<unsigned long long>(&payload) >> 32);
@@ -506,7 +531,9 @@ extern "C" __global__ void __raygen__rg() {
             }
 
             const float3 normal = Dot(payload.hitNormal, direction) < 0.0f ? payload.hitNormal : -payload.hitNormal;
-            const float3 albedo = make_float3(params.settings.albedoR, params.settings.albedoG, params.settings.albedoB);
+            const NativeMaterial* materials = reinterpret_cast<const NativeMaterial*>(params.materials);
+            const NativeMaterial material = materials[payload.materialIndex];
+            const float3 albedo = make_float3(material.albedoR, material.albedoG, material.albedoB);
 
             if (params.settings.enableNormalDebug != 0) {
                 radiance = radiance + (normal * 0.5f + make_float3(0.5f, 0.5f, 0.5f));
@@ -535,7 +562,14 @@ extern "C" __global__ void __raygen__rg() {
 
             throughput = throughput * albedo;
             origin = payload.hitPosition + normal * 0.001f;
-            direction = SampleHemisphere(normal, seed);
+            const float reflectivity = fminf(fmaxf(material.reflectivity, 0.0f), 1.0f);
+            if (material.reflective != 0) {
+                const float3 reflectedDirection = Normalize(Reflect(direction, normal));
+                const float3 diffuseDirection = SampleHemisphere(normal, seed);
+                direction = Normalize(Lerp(diffuseDirection, reflectedDirection, reflectivity));
+            } else {
+                direction = SampleHemisphere(normal, seed);
+            }
 
             if (bounce + 1 >= params.settings.russianRouletteStartBounce) {
                 const float survivalProbability = fminf(MaxComponent(throughput), 0.95f);
@@ -617,6 +651,10 @@ public:
         int normalFloatCount,
         const uint16_t* indices,
         int indexCount,
+        const uint32_t* triangleMaterialIndices,
+        int triangleMaterialIndexCount,
+        const NativeMaterial* materials,
+        int materialCount,
         unsigned int frameIndex,
         uint8_t* outputPixels,
         int outputLength) {
@@ -627,17 +665,21 @@ public:
 
         const auto vertexCount = static_cast<unsigned int>(vertexFloatCount / 3);
         const auto triangleCount = static_cast<unsigned int>(indexCount / 3);
+        if (triangleMaterialIndexCount != static_cast<int>(triangleCount) || materialCount <= 0) {
+            throw OptixError("Scene material buffers are invalid.");
+        }
         const auto requiredLength = width_ * height_ * 4;
 
         if (outputLength < requiredLength) {
             throw OptixError("Output buffer is too small.");
         }
 
-        UploadScene(vertices, normals, vertexCount, indices, triangleCount);
+        UploadScene(vertices, normals, vertexCount, indices, triangleCount, triangleMaterialIndices, materials, static_cast<unsigned int>(materialCount));
 
         LaunchParams params{};
         params.image = reinterpret_cast<uchar4*>(imageBuffer_);
         params.accumulation = reinterpret_cast<float4*>(accumulationBuffer_);
+        params.materials = materialBuffer_;
         params.imageWidth = static_cast<unsigned int>(width_);
         params.imageHeight = static_cast<unsigned int>(height_);
         params.cameraPosition = Float3{camera.positionX, camera.positionY, camera.positionZ};
@@ -800,18 +842,32 @@ private:
         sbt_.hitgroupRecordCount = 1;
     }
 
-    void UploadScene(const float* vertices, const float* normals, unsigned int vertexCount, const uint16_t* indices, unsigned int triangleCount) {
+    void UploadScene(
+        const float* vertices,
+        const float* normals,
+        unsigned int vertexCount,
+        const uint16_t* indices,
+        unsigned int triangleCount,
+        const uint32_t* triangleMaterialIndices,
+        const NativeMaterial* materials,
+        unsigned int materialCount) {
         const auto vertexBytes = static_cast<size_t>(vertexCount) * sizeof(float3);
         const auto normalBytes = static_cast<size_t>(vertexCount) * sizeof(float3);
         const auto indexBytes = static_cast<size_t>(triangleCount) * sizeof(TriangleIndices);
+        const auto triangleMaterialIndexBytes = static_cast<size_t>(triangleCount) * sizeof(uint32_t);
+        const auto materialBytes = static_cast<size_t>(materialCount) * sizeof(NativeMaterial);
 
         EnsureBuffer(vertexBuffer_, vertexBufferCapacity_, vertexBytes);
         EnsureBuffer(normalBuffer_, normalBufferCapacity_, normalBytes);
         EnsureBuffer(indexBuffer_, indexBufferCapacity_, indexBytes);
+        EnsureBuffer(triangleMaterialIndexBuffer_, triangleMaterialIndexCapacity_, triangleMaterialIndexBytes);
+        EnsureBuffer(materialBuffer_, materialBufferCapacity_, materialBytes);
 
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(vertexBuffer_), vertices, vertexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(vertices)");
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(normalBuffer_), normals, normalBytes, cudaMemcpyHostToDevice), "cudaMemcpy(normals)");
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(indexBuffer_), indices, indexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(indices)");
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(triangleMaterialIndexBuffer_), triangleMaterialIndices, triangleMaterialIndexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(triangleMaterialIndices)");
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(materialBuffer_), materials, materialBytes, cudaMemcpyHostToDevice), "cudaMemcpy(materials)");
 
         const uint32_t flags[] = {OPTIX_GEOMETRY_FLAG_NONE};
 
@@ -857,6 +913,8 @@ private:
         hitRecord.data.vertices = vertexBuffer_;
         hitRecord.data.normals = normalBuffer_;
         hitRecord.data.indices = indexBuffer_;
+        hitRecord.data.triangleMaterialIndices = triangleMaterialIndexBuffer_;
+        hitRecord.data.materials = materialBuffer_;
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(hitgroupRecordBuffer_), &hitRecord, sizeof(hitRecord), cudaMemcpyHostToDevice), "cudaMemcpy(hitgroupRecord-update)");
     }
 
@@ -913,6 +971,8 @@ private:
         SafeCudaFree(vertexBuffer_);
         SafeCudaFree(normalBuffer_);
         SafeCudaFree(indexBuffer_);
+        SafeCudaFree(triangleMaterialIndexBuffer_);
+        SafeCudaFree(materialBuffer_);
         SafeCudaFree(gasScratchBuffer_);
         SafeCudaFree(gasOutputBuffer_);
 
@@ -1016,12 +1076,16 @@ private:
     CUdeviceptr vertexBuffer_ = 0;
     CUdeviceptr normalBuffer_ = 0;
     CUdeviceptr indexBuffer_ = 0;
+    CUdeviceptr triangleMaterialIndexBuffer_ = 0;
+    CUdeviceptr materialBuffer_ = 0;
     CUdeviceptr gasScratchBuffer_ = 0;
     CUdeviceptr gasOutputBuffer_ = 0;
 
     size_t vertexBufferCapacity_ = 0;
     size_t normalBufferCapacity_ = 0;
     size_t indexBufferCapacity_ = 0;
+    size_t triangleMaterialIndexCapacity_ = 0;
+    size_t materialBufferCapacity_ = 0;
     size_t gasScratchCapacity_ = 0;
     size_t gasOutputCapacity_ = 0;
 
@@ -1085,6 +1149,10 @@ extern "C" bool roptixRender(
     int normalFloatCount,
     const uint16_t* indices,
     int indexCount,
+    const uint32_t* triangleMaterialIndices,
+    int triangleMaterialIndexCount,
+    const NativeMaterial* materials,
+    int materialCount,
     unsigned int frameIndex,
     uint8_t* outputPixels,
     int outputLength,
@@ -1097,7 +1165,22 @@ extern "C" bool roptixRender(
 
         auto* renderer = static_cast<NativeRenderer*>(handle);
         renderer->Resize(width, height);
-        renderer->Render(camera, settings, vertices, vertexFloatCount, normals, normalFloatCount, indices, indexCount, frameIndex, outputPixels, outputLength);
+        renderer->Render(
+            camera,
+            settings,
+            vertices,
+            vertexFloatCount,
+            normals,
+            normalFloatCount,
+            indices,
+            indexCount,
+            triangleMaterialIndices,
+            triangleMaterialIndexCount,
+            materials,
+            materialCount,
+            frameIndex,
+            outputPixels,
+            outputLength);
         CopyError(error, errorCapacity, "");
         return true;
     } catch (const std::exception& exception) {

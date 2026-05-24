@@ -41,12 +41,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             public static bool EnableHardShadows = true;
         }
 
-        public static class Materials {
-            public const float DefaultAlbedoR = 0.88f;
-            public const float DefaultAlbedoG = 0.52f;
-            public const float DefaultAlbedoB = 0.18f;
-        }
-
         public static class Presentation {
             public const float Exposure = 1.0f;
             public const float Gamma = 2.2f;
@@ -93,7 +87,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     public override void DrawMesh(MeshData meshData, MaterialData materialData, Matrix4x4 matrix) {
 
-        drawCalls.Add(new DrawCall(meshData, matrix));
+        drawCalls.Add(new DrawCall(meshData, materialData, matrix));
     }
 
     public override void End() {
@@ -137,6 +131,10 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
                 scene.Normals.Length,
                 scene.Indices,
                 scene.Indices.Length,
+                scene.TriangleMaterialIndices,
+                scene.TriangleMaterialIndices.Length,
+                scene.Materials,
+                scene.Materials.Length,
                 frameIndex++,
                 pixels,
                 pixels.Length,
@@ -290,27 +288,43 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         Console.WriteLine($"[OptiX] {error}");
     }
 
-    private OptixGeometry BuildSceneGeometry() {
+    private OptixScene BuildSceneGeometry() {
 
         var vertices = new List<float>();
         var normals = new List<float>();
         var indices = new List<ushort>();
+        var triangleMaterialIndices = new List<uint>();
+        var materials = new List<OptixMaterial>();
 
         foreach (var drawCall in drawCalls) {
 
             var geometry = drawCall.MeshData.CreateOptixGeometry(drawCall.Matrix);
             var vertexOffset = vertices.Count / 3;
+            var material = drawCall.MaterialData.OptixMaterialData
+                           ?? throw new InvalidOperationException("OptiX material data has not been built.");
+            var materialIndex = (uint)materials.Count;
 
             vertices.AddRange(geometry.Vertices);
             normals.AddRange(geometry.Normals);
+            materials.Add(material);
 
             for (var index = 0; index < geometry.Indices.Length; index++) {
 
                 indices.Add((ushort)(geometry.Indices[index] + vertexOffset));
             }
+
+            for (var triangleIndex = 0; triangleIndex < geometry.Indices.Length / 3; triangleIndex++) {
+
+                triangleMaterialIndices.Add(materialIndex);
+            }
         }
 
-        return new OptixGeometry(vertices.ToArray(), normals.ToArray(), indices.ToArray());
+        return new OptixScene(
+            vertices.ToArray(),
+            normals.ToArray(),
+            indices.ToArray(),
+            triangleMaterialIndices.ToArray(),
+            materials.ToArray());
     }
 
     private static OptixRenderSettings BuildSettings() {
@@ -338,10 +352,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             Settings.Lighting.SunDirectionZ,
             Settings.Lighting.SunIntensity,
             Settings.Lighting.SunAngularRadius,
-            Settings.Lighting.AmbientIntensity,
-            Settings.Materials.DefaultAlbedoR,
-            Settings.Materials.DefaultAlbedoG,
-            Settings.Materials.DefaultAlbedoB);
+            Settings.Lighting.AmbientIntensity);
     }
 
     private static int BoolToInt(bool value) {
@@ -377,6 +388,11 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         foreach (var drawCall in drawCalls) {
 
             hash.Add(RuntimeHelpers.GetHashCode(drawCall.MeshData));
+            hash.Add(drawCall.MaterialData.Albedo.X);
+            hash.Add(drawCall.MaterialData.Albedo.Y);
+            hash.Add(drawCall.MaterialData.Albedo.Z);
+            hash.Add(drawCall.MaterialData.OptixReflective);
+            hash.Add(drawCall.MaterialData.OptixReflectivity);
             AddMatrixToHash(ref hash, drawCall.Matrix);
         }
 
@@ -414,7 +430,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         hash.Add(matrix.M44);
     }
 
-    private readonly record struct DrawCall(MeshData MeshData, Matrix4x4 Matrix);
+    private readonly record struct DrawCall(MeshData MeshData, MaterialData MaterialData, Matrix4x4 Matrix);
 
     private static class OptixNative {
 
@@ -445,6 +461,10 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             int normalFloatCount,
             ushort[] indices,
             int indexCount,
+            uint[] triangleMaterialIndices,
+            int triangleMaterialIndexCount,
+            OptixMaterial[] materials,
+            int materialCount,
             uint frameIndex,
             byte[] outputPixels,
             int outputLength,

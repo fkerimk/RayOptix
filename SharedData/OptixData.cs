@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 internal sealed class OptixMesh(float[] vertices, float[] normals, ushort[] indices) {
 
     public readonly float[] Vertices = vertices;
@@ -12,6 +14,31 @@ internal sealed class OptixGeometry(float[] vertices, float[] normals, ushort[] 
     public readonly ushort[] Indices = indices;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+internal readonly struct OptixMaterial(float albedoR, float albedoG, float albedoB, int reflective, float reflectivity) {
+
+    public readonly float AlbedoR = albedoR;
+    public readonly float AlbedoG = albedoG;
+    public readonly float AlbedoB = albedoB;
+    public readonly int Reflective = reflective;
+    public readonly float Reflectivity = reflectivity;
+}
+
+internal sealed class OptixScene(
+    float[] vertices,
+    float[] normals,
+    ushort[] indices,
+    uint[] triangleMaterialIndices,
+    OptixMaterial[] materials) {
+
+    public readonly float[] Vertices = vertices;
+    public readonly float[] Normals = normals;
+    public readonly ushort[] Indices = indices;
+    public readonly uint[] TriangleMaterialIndices = triangleMaterialIndices;
+    public readonly OptixMaterial[] Materials = materials;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal readonly struct OptixCamera(float positionX, float positionY, float positionZ, float targetX, float targetY, float targetZ, float fovY) {
 
     public readonly float PositionX = positionX;
@@ -23,6 +50,7 @@ internal readonly struct OptixCamera(float positionX, float positionY, float pos
     public readonly float FovY = fovY;
 }
 
+[StructLayout(LayoutKind.Sequential)]
 internal readonly struct OptixRenderSettings(
     int samplesPerPixel,
     int maxBounces,
@@ -46,10 +74,7 @@ internal readonly struct OptixRenderSettings(
     float sunDirectionZ,
     float sunIntensity,
     float sunAngularRadius,
-    float ambientIntensity,
-    float albedoR,
-    float albedoG,
-    float albedoB) {
+    float ambientIntensity) {
 
     public readonly int SamplesPerPixel = samplesPerPixel;
     public readonly int MaxBounces = maxBounces;
@@ -74,7 +99,4 @@ internal readonly struct OptixRenderSettings(
     public readonly float SunIntensity = sunIntensity;
     public readonly float SunAngularRadius = sunAngularRadius;
     public readonly float AmbientIntensity = ambientIntensity;
-    public readonly float AlbedoR = albedoR;
-    public readonly float AlbedoG = albedoG;
-    public readonly float AlbedoB = albedoB;
 }

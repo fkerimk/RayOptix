@@ -25,16 +25,16 @@ internal static class Program {
         var surfaceMesh = Primitive.Mesh.Cube(5, 0.25f, 5);
         surfaceMesh.Build();
         
-        var floorMaterial = new MaterialData();
+        var floorMaterial = new MaterialData(new Vector3(0.78f, 0.73f, 0.66f));
         floorMaterial.Build();
-        
-        var wallMaterial = new MaterialData();
+
+        var wallMaterial = new MaterialData(new Vector3(0.55f, 0.70f, 0.82f), optixReflective: true, optixReflectivity: 0.9f);
         wallMaterial.Build();
         
         var cubeMesh = Primitive.Mesh.Cube(1);
         cubeMesh.Build();
         
-        var cubeMaterial = new MaterialData();
+        var cubeMaterial = new MaterialData(new Vector3(0.92f, 0.36f, 0.24f));
         cubeMaterial.Build();
 
         var raylibRenderer = new RaylibRenderer(camera);
@@ -49,7 +49,6 @@ internal static class Program {
         
         while (!WindowShouldClose()) {
 
-            //freecamhere
             if (IsMouseButtonPressed(MouseButton.Right)) DisableCursor();
             if (IsMouseButtonReleased(MouseButton.Right)) EnableCursor();
 
