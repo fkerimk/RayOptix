@@ -17,6 +17,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             public const int MinBounces = 1;
             public const int RussianRouletteStartBounce = 2;
             public const bool EnableAccumulation = true;
+            public static bool EnableDenoiser = true;
             public const bool ResetAccumulationOnResize = true;
         }
 
@@ -264,6 +265,12 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             stateChanged = true;
         }
 
+        if (IsKeyPressed(KeyboardKey.F4)) {
+
+            Settings.Quality.EnableDenoiser = !Settings.Quality.EnableDenoiser;
+            stateChanged = true;
+        }
+
         if (stateChanged) {
 
             frameIndex = 0;
@@ -275,6 +282,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         DrawText($"F1 Normal Debug: {(Settings.Debug.EnableNormalDebug ? "ON" : "OFF")}", 10, 56, 20, Color.DarkBlue);
         DrawText($"F2 Sun Light: {(Settings.Lighting.EnableSunLight ? "ON" : "OFF")}", 10, 80, 20, Color.DarkBlue);
         DrawText($"F3 Hard Shadows: {(Settings.Shadows.EnableHardShadows ? "ON" : "OFF")}", 10, 104, 20, Color.DarkBlue);
+        DrawText($"F4 Denoiser: {(Settings.Quality.EnableDenoiser ? "ON" : "OFF")}", 10, 128, 20, Color.DarkBlue);
     }
 
     private void LogErrorOnce(string? error) {
@@ -335,6 +343,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             Settings.Quality.MinBounces,
             Settings.Quality.RussianRouletteStartBounce,
             BoolToInt(Settings.Quality.EnableAccumulation),
+            BoolToInt(Settings.Quality.EnableDenoiser),
             BoolToInt(Settings.Lighting.EnableSky),
             BoolToInt(Settings.Lighting.EnableSunLight),
             BoolToInt(Settings.Shadows.EnableHardShadows),

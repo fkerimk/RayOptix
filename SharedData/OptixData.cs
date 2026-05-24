@@ -58,6 +58,7 @@ internal readonly struct OptixRenderSettings(
     int minBounces,
     int russianRouletteStartBounce,
     int enableAccumulation,
+    int enableDenoiser,
     int enableSky,
     int enableSunLight,
     int enableHardShadows,
@@ -82,6 +83,7 @@ internal readonly struct OptixRenderSettings(
     public readonly int MinBounces = minBounces;
     public readonly int RussianRouletteStartBounce = russianRouletteStartBounce;
     public readonly int EnableAccumulation = enableAccumulation;
+    public readonly int EnableDenoiser = enableDenoiser;
     public readonly int EnableSky = enableSky;
     public readonly int EnableSunLight = enableSunLight;
     public readonly int EnableHardShadows = enableHardShadows;

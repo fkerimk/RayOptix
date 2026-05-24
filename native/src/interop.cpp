@@ -43,6 +43,7 @@ struct NativeRenderSettings {
     int minBounces;
     int russianRouletteStartBounce;
     int enableAccumulation;
+    int enableDenoiser;
     int enableSky;
     int enableSunLight;
     int enableHardShadows;
@@ -73,7 +74,7 @@ struct NativeMaterial {
 };
 
 struct LaunchParams {
-    uchar4* image;
+    float4* beauty;
     float4* accumulation;
     CUdeviceptr materials;
     unsigned int imageWidth;
@@ -168,6 +169,7 @@ struct NativeRenderSettings {
     int minBounces;
     int russianRouletteStartBounce;
     int enableAccumulation;
+    int enableDenoiser;
     int enableSky;
     int enableSunLight;
     int enableHardShadows;
@@ -198,7 +200,7 @@ struct NativeMaterial {
 };
 
 struct LaunchParams {
-    uchar4* image;
+    float4* beauty;
     float4* accumulation;
     unsigned long long materials;
     unsigned int imageWidth;
@@ -328,20 +330,6 @@ static __forceinline__ __device__ Payload* GetPayloadPointer() {
 
 static __forceinline__ __device__ float MaxComponent(float3 value) {
     return fmaxf(value.x, fmaxf(value.y, value.z));
-}
-
-static __forceinline__ __device__ uchar4 ToColor(float3 color) {
-    const float exposure = fmaxf(params.settings.exposure, 0.001f);
-    const float gamma = fmaxf(params.settings.gamma, 0.001f);
-    color = color * exposure;
-    color.x = powf(fminf(fmaxf(color.x, 0.0f), 1.0f), 1.0f / gamma);
-    color.y = powf(fminf(fmaxf(color.y, 0.0f), 1.0f), 1.0f / gamma);
-    color.z = powf(fminf(fmaxf(color.z, 0.0f), 1.0f), 1.0f / gamma);
-    return make_uchar4(
-        static_cast<unsigned char>(color.x * 255.0f),
-        static_cast<unsigned char>(color.y * 255.0f),
-        static_cast<unsigned char>(color.z * 255.0f),
-        255);
 }
 
 static __forceinline__ __device__ float3 Lerp(float3 a, float3 b, float t) {
@@ -601,11 +589,12 @@ extern "C" __global__ void __raygen__rg() {
             : params.accumulation[pixelIndex];
         const float3 sum = make_float3(previous.x, previous.y, previous.z) + sampleRadiance;
         params.accumulation[pixelIndex] = make_float4(sum.x, sum.y, sum.z, 0.0f);
-        params.image[pixelIndex] = ToColor(sum / static_cast<float>(params.frameIndex + 1u));
+        const float3 averaged = sum / static_cast<float>(params.frameIndex + 1u);
+        params.beauty[pixelIndex] = make_float4(averaged.x, averaged.y, averaged.z, 1.0f);
         return;
     }
 
-    params.image[pixelIndex] = ToColor(sampleRadiance);
+    params.beauty[pixelIndex] = make_float4(sampleRadiance.x, sampleRadiance.y, sampleRadiance.z, 1.0f);
 }
 )";
 
@@ -613,6 +602,7 @@ class NativeRenderer {
 public:
     explicit NativeRenderer(int width, int height) {
         InitializeOptix();
+        CreateDenoiser();
         CreatePipeline();
         CreateSbt();
         Resize(width, height);
@@ -627,20 +617,27 @@ public:
             throw OptixError("Invalid render size.");
         }
 
-        if (width == width_ && height == height_ && imageBuffer_ != 0) {
+        if (width == width_ && height == height_ && beautyBuffer_ != 0) {
             return;
         }
 
         width_ = width;
         height_ = height;
 
-        if (imageBuffer_ != 0) {
-            CheckCuda(cudaFree(reinterpret_cast<void*>(imageBuffer_)), "cudaFree(imageBuffer)");
-            imageBuffer_ = 0;
+        if (beautyBuffer_ != 0) {
+            CheckCuda(cudaFree(reinterpret_cast<void*>(beautyBuffer_)), "cudaFree(beautyBuffer)");
+            beautyBuffer_ = 0;
         }
 
-        const auto imageSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(uchar4);
-        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&imageBuffer_), imageSize), "cudaMalloc(imageBuffer)");
+        const auto beautySize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&beautyBuffer_), beautySize), "cudaMalloc(beautyBuffer)");
+
+        if (denoisedBeautyBuffer_ != 0) {
+            CheckCuda(cudaFree(reinterpret_cast<void*>(denoisedBeautyBuffer_)), "cudaFree(denoisedBeautyBuffer)");
+            denoisedBeautyBuffer_ = 0;
+        }
+
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&denoisedBeautyBuffer_), beautySize), "cudaMalloc(denoisedBeautyBuffer)");
 
         if (accumulationBuffer_ != 0) {
             CheckCuda(cudaFree(reinterpret_cast<void*>(accumulationBuffer_)), "cudaFree(accumulationBuffer)");
@@ -650,6 +647,8 @@ public:
         const auto accumulationSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
         CheckCuda(cudaMalloc(reinterpret_cast<void**>(&accumulationBuffer_), accumulationSize), "cudaMalloc(accumulationBuffer)");
         CheckCuda(cudaMemset(reinterpret_cast<void*>(accumulationBuffer_), 0, accumulationSize), "cudaMemset(accumulationBuffer)");
+
+        SetupDenoiser();
     }
 
     void Render(
@@ -687,7 +686,7 @@ public:
         UploadScene(vertices, normals, vertexCount, indices, triangleCount, triangleMaterialIndices, materials, static_cast<unsigned int>(materialCount));
 
         LaunchParams params{};
-        params.image = reinterpret_cast<uchar4*>(imageBuffer_);
+        params.beauty = reinterpret_cast<float4*>(beautyBuffer_);
         params.accumulation = reinterpret_cast<float4*>(accumulationBuffer_);
         params.materials = materialBuffer_;
         params.imageWidth = static_cast<unsigned int>(width_);
@@ -715,7 +714,18 @@ public:
             1), "optixLaunch");
 
         CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize");
-        CheckCuda(cudaMemcpy(outputPixels, reinterpret_cast<void*>(imageBuffer_), requiredLength, cudaMemcpyDeviceToHost), "cudaMemcpy(outputPixels)");
+
+        const CUdeviceptr beautySource = settings.enableDenoiser != 0
+            ? DenoiseBeauty()
+            : beautyBuffer_;
+
+        const auto beautySize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
+        hostBeautyBuffer_.resize(static_cast<size_t>(width_) * static_cast<size_t>(height_));
+        CheckCuda(
+            cudaMemcpy(hostBeautyBuffer_.data(), reinterpret_cast<void*>(beautySource), beautySize, cudaMemcpyDeviceToHost),
+            "cudaMemcpy(hostBeautyBuffer)");
+
+        ToneMapToPixels(hostBeautyBuffer_.data(), static_cast<size_t>(width_) * static_cast<size_t>(height_), settings, outputPixels);
     }
 
 private:
@@ -736,6 +746,86 @@ private:
 
         CheckOptix(optixDeviceContextCreate(nullptr, &options, &context_), "optixDeviceContextCreate");
         CheckCuda(cudaStreamCreate(&stream_), "cudaStreamCreate");
+    }
+
+    void CreateDenoiser() {
+        OptixDenoiserOptions denoiserOptions{};
+        denoiserOptions.guideAlbedo = 0;
+        denoiserOptions.guideNormal = 0;
+        denoiserOptions.denoiseAlpha = OPTIX_DENOISER_ALPHA_MODE_COPY;
+
+        CheckOptix(
+            optixDenoiserCreate(context_, OPTIX_DENOISER_MODEL_KIND_HDR, &denoiserOptions, &denoiser_),
+            "optixDenoiserCreate");
+    }
+
+    void SetupDenoiser() {
+        if (denoiser_ == nullptr) {
+            return;
+        }
+
+        CheckOptix(
+            optixDenoiserComputeMemoryResources(denoiser_, width_, height_, &denoiserSizes_),
+            "optixDenoiserComputeMemoryResources");
+
+        EnsureBuffer(denoiserStateBuffer_, denoiserStateCapacity_, denoiserSizes_.stateSizeInBytes);
+        EnsureBuffer(denoiserScratchBuffer_, denoiserScratchCapacity_, denoiserSizes_.withoutOverlapScratchSizeInBytes);
+
+        CheckOptix(
+            optixDenoiserSetup(
+                denoiser_,
+                stream_,
+                width_,
+                height_,
+                denoiserStateBuffer_,
+                denoiserSizes_.stateSizeInBytes,
+                denoiserScratchBuffer_,
+                denoiserSizes_.withoutOverlapScratchSizeInBytes),
+            "optixDenoiserSetup");
+
+        CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize(denoiserSetup)");
+    }
+
+    CUdeviceptr DenoiseBeauty() {
+        OptixImage2D inputLayer{};
+        inputLayer.data = beautyBuffer_;
+        inputLayer.width = static_cast<unsigned int>(width_);
+        inputLayer.height = static_cast<unsigned int>(height_);
+        inputLayer.rowStrideInBytes = static_cast<unsigned int>(width_ * static_cast<int>(sizeof(float4)));
+        inputLayer.pixelStrideInBytes = sizeof(float4);
+        inputLayer.format = OPTIX_PIXEL_FORMAT_FLOAT4;
+
+        OptixImage2D outputLayer = inputLayer;
+        outputLayer.data = denoisedBeautyBuffer_;
+
+        OptixDenoiserLayer denoiserLayer{};
+        denoiserLayer.input = inputLayer;
+        denoiserLayer.output = outputLayer;
+
+        OptixDenoiserGuideLayer guideLayer{};
+
+        OptixDenoiserParams denoiserParams{};
+        denoiserParams.hdrIntensity = 0;
+        denoiserParams.blendFactor = 0.0f;
+
+        CheckOptix(
+            optixDenoiserInvoke(
+                denoiser_,
+                stream_,
+                &denoiserParams,
+                denoiserStateBuffer_,
+                denoiserSizes_.stateSizeInBytes,
+                &guideLayer,
+                &denoiserLayer,
+                1,
+                0,
+                0,
+                denoiserScratchBuffer_,
+                denoiserSizes_.withoutOverlapScratchSizeInBytes),
+            "optixDenoiserInvoke");
+
+        CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize(denoiser)");
+        return denoisedBeautyBuffer_;
     }
 
     void CreatePipeline() {
@@ -972,7 +1062,8 @@ private:
     }
 
     void Destroy() {
-        SafeCudaFree(imageBuffer_);
+        SafeCudaFree(beautyBuffer_);
+        SafeCudaFree(denoisedBeautyBuffer_);
         SafeCudaFree(accumulationBuffer_);
         SafeCudaFree(launchParamsBuffer_);
         SafeCudaFree(raygenRecordBuffer_);
@@ -983,6 +1074,8 @@ private:
         SafeCudaFree(indexBuffer_);
         SafeCudaFree(triangleMaterialIndexBuffer_);
         SafeCudaFree(materialBuffer_);
+        SafeCudaFree(denoiserStateBuffer_);
+        SafeCudaFree(denoiserScratchBuffer_);
         SafeCudaFree(gasScratchBuffer_);
         SafeCudaFree(gasOutputBuffer_);
 
@@ -1005,6 +1098,10 @@ private:
         if (module_ != nullptr) {
             optixModuleDestroy(module_);
             module_ = nullptr;
+        }
+        if (denoiser_ != nullptr) {
+            optixDenoiserDestroy(denoiser_);
+            denoiser_ = nullptr;
         }
         if (stream_ != nullptr) {
             cudaStreamDestroy(stream_);
@@ -1064,8 +1161,29 @@ private:
         }
     }
 
+    static void ToneMapToPixels(const float4* hdrPixels, size_t pixelCount, const NativeRenderSettings& settings, uint8_t* outputPixels) {
+        const float exposure = std::max(settings.exposure, 0.001f);
+        const float gamma = std::max(settings.gamma, 0.001f);
+
+        for (size_t index = 0; index < pixelCount; ++index) {
+            const size_t outputIndex = index * 4;
+
+            auto tonemapChannel = [exposure, gamma](float value) -> uint8_t {
+                const float exposed = std::clamp(value * exposure, 0.0f, 1.0f);
+                const float corrected = std::pow(exposed, 1.0f / gamma);
+                return static_cast<uint8_t>(std::clamp(corrected * 255.0f, 0.0f, 255.0f));
+            };
+
+            outputPixels[outputIndex + 0] = tonemapChannel(hdrPixels[index].x);
+            outputPixels[outputIndex + 1] = tonemapChannel(hdrPixels[index].y);
+            outputPixels[outputIndex + 2] = tonemapChannel(hdrPixels[index].z);
+            outputPixels[outputIndex + 3] = 255;
+        }
+    }
+
     OptixDeviceContext context_ = nullptr;
     cudaStream_t stream_ = nullptr;
+    OptixDenoiser denoiser_ = nullptr;
     OptixModule module_ = nullptr;
     OptixPipeline pipeline_ = nullptr;
     OptixProgramGroup raygenProgramGroup_ = nullptr;
@@ -1076,7 +1194,8 @@ private:
     int width_ = 0;
     int height_ = 0;
 
-    CUdeviceptr imageBuffer_ = 0;
+    CUdeviceptr beautyBuffer_ = 0;
+    CUdeviceptr denoisedBeautyBuffer_ = 0;
     CUdeviceptr accumulationBuffer_ = 0;
     CUdeviceptr launchParamsBuffer_ = 0;
     CUdeviceptr raygenRecordBuffer_ = 0;
@@ -1088,6 +1207,8 @@ private:
     CUdeviceptr indexBuffer_ = 0;
     CUdeviceptr triangleMaterialIndexBuffer_ = 0;
     CUdeviceptr materialBuffer_ = 0;
+    CUdeviceptr denoiserStateBuffer_ = 0;
+    CUdeviceptr denoiserScratchBuffer_ = 0;
     CUdeviceptr gasScratchBuffer_ = 0;
     CUdeviceptr gasOutputBuffer_ = 0;
 
@@ -1096,10 +1217,14 @@ private:
     size_t indexBufferCapacity_ = 0;
     size_t triangleMaterialIndexCapacity_ = 0;
     size_t materialBufferCapacity_ = 0;
+    size_t denoiserStateCapacity_ = 0;
+    size_t denoiserScratchCapacity_ = 0;
     size_t gasScratchCapacity_ = 0;
     size_t gasOutputCapacity_ = 0;
 
+    OptixDenoiserSizes denoiserSizes_{};
     OptixTraversableHandle gasHandle_ = 0;
+    std::vector<float4> hostBeautyBuffer_;
 };
 
 void CopyError(char* error, int errorCapacity, const std::string& message) {
