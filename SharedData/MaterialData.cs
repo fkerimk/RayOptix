@@ -1,40 +1,39 @@
 using System.Numerics;
 using Raylib_cs;
 
-internal class MaterialData(Vector3 albedo, bool optixReflective = false, float optixReflectivity = 1.0f) : SharedData {
+internal unsafe class MaterialData : SharedData {
 
-    public Vector3 Albedo = albedo;
-    public bool OptixReflective = optixReflective;
-    public float OptixReflectivity = optixReflectivity;
-    public Raylib_cs.Material? RaylibMaterial;
+    public Vector4 Color = new(1, 1, 1, 1);
+    public float Reflectivity = 0;
+    
+    public Material? RaylibMaterial;
     public OptixMaterial? OptixMaterialData;
 
     protected override void BuildRaylib() {
 
         UnloadRaylib();
 
-        var material = Raylib_cs.Raylib.LoadMaterialDefault();
-        unsafe {
+        var material = Raylib.LoadMaterialDefault();
 
-            material.Maps[(int)MaterialMapIndex.Albedo].Color = ToColor(Albedo);
-        }
+        material.Maps[(int)MaterialMapIndex.Albedo].Color = ToColor(Color);
+        
         RaylibMaterial = material;
     }
 
     protected override void UnloadRaylib() {
 
-        if (RaylibMaterial.HasValue) Raylib_cs.Raylib.UnloadMaterial(RaylibMaterial.Value);
+        if (RaylibMaterial.HasValue) Raylib.UnloadMaterial(RaylibMaterial.Value);
     }
 
     protected override void BuildOptix() {
 
         UnloadOptix();
         OptixMaterialData = new OptixMaterial(
-            Albedo.X,
-            Albedo.Y,
-            Albedo.Z,
-            OptixReflective ? 1 : 0,
-            OptixReflectivity);
+            Color.X,
+            Color.Y,
+            Color.Z,
+            Reflectivity > 0 ? 1 : 0,
+            Reflectivity);
     }
 
     protected override void UnloadOptix() {
@@ -42,13 +41,13 @@ internal class MaterialData(Vector3 albedo, bool optixReflective = false, float 
         OptixMaterialData = null;
     }
 
-    private static Color ToColor(Vector3 color) {
+    private static Color ToColor(Vector4 color) {
 
         return new Color(
             ToColorChannel(color.X),
             ToColorChannel(color.Y),
             ToColorChannel(color.Z),
-            (byte)255);
+            ToColorChannel(color.W));
     }
 
     private static byte ToColorChannel(float value) {
