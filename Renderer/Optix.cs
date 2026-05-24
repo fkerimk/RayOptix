@@ -12,12 +12,16 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private static class Settings {
 
         public static class Quality {
-            public const int SamplesPerPixel = 16;
+            public const int SamplesPerPixel = 1;
             public const int MaxBounces = 4;
             public const int MinBounces = 1;
             public const int RussianRouletteStartBounce = 2;
             public const bool EnableAccumulation = true;
             public static bool EnableDenoiser = true;
+            public static float RenderScale = 0.3f;
+            public const float MinRenderScale = 0.25f;
+            public const float MaxRenderScale = 1.0f;
+            public const float RenderScaleStep = 0.1f;
             public const bool ResetAccumulationOnResize = true;
         }
 
@@ -71,8 +75,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     public override void Init() {
 
-        textureWidth = GetScreenWidth();
-        textureHeight = GetScreenHeight();
+        (textureWidth, textureHeight) = GetRenderDimensions();
 
         var image = GenImageColor(textureWidth, textureHeight, Color.Black);
         texture = LoadTextureFromImage(image);
@@ -183,8 +186,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     private void EnsureTextureSize() {
 
-        var width = GetScreenWidth();
-        var height = GetScreenHeight();
+        var (width, height) = GetRenderDimensions();
 
         if (width == textureWidth && height == textureHeight) {
 
@@ -219,6 +221,18 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
                 LogErrorOnce(initError);
             }
         }
+    }
+
+    private static (int Width, int Height) GetRenderDimensions() {
+
+        var scale = Math.Clamp(
+            Settings.Quality.RenderScale,
+            Settings.Quality.MinRenderScale,
+            Settings.Quality.MaxRenderScale);
+
+        var width = Math.Max(1, (int)MathF.Round(GetScreenWidth() * scale));
+        var height = Math.Max(1, (int)MathF.Round(GetScreenHeight() * scale));
+        return (width, height);
     }
 
     private void EnsureNativeInitialized() {
@@ -271,6 +285,22 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             stateChanged = true;
         }
 
+        if (IsKeyPressed(KeyboardKey.F5)) {
+
+            Settings.Quality.RenderScale = MathF.Max(
+                Settings.Quality.MinRenderScale,
+                Settings.Quality.RenderScale - Settings.Quality.RenderScaleStep);
+            stateChanged = true;
+        }
+
+        if (IsKeyPressed(KeyboardKey.F6)) {
+
+            Settings.Quality.RenderScale = MathF.Min(
+                Settings.Quality.MaxRenderScale,
+                Settings.Quality.RenderScale + Settings.Quality.RenderScaleStep);
+            stateChanged = true;
+        }
+
         if (stateChanged) {
 
             frameIndex = 0;
@@ -283,6 +313,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         DrawText($"F2 Sun Light: {(Settings.Lighting.EnableSunLight ? "ON" : "OFF")}", 10, 80, 20, Color.DarkBlue);
         DrawText($"F3 Hard Shadows: {(Settings.Shadows.EnableHardShadows ? "ON" : "OFF")}", 10, 104, 20, Color.DarkBlue);
         DrawText($"F4 Denoiser: {(Settings.Quality.EnableDenoiser ? "ON" : "OFF")}", 10, 128, 20, Color.DarkBlue);
+        DrawText($"F5/F6 Render Scale: {Settings.Quality.RenderScale:0.00}x", 10, 152, 20, Color.DarkBlue);
     }
 
     private void LogErrorOnce(string? error) {

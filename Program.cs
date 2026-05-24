@@ -10,7 +10,7 @@ internal static class Program {
 
     private static void Main(string[] args) {
 
-        SetConfigFlags(ConfigFlags.ResizableWindow);
+        SetConfigFlags(ConfigFlags.ResizableWindow | ConfigFlags.VSyncHint);
         SetTraceLogLevel(TraceLogLevel.Error);
         InitWindow(1280, 720, "RayOptix");
         SetWindowMonitor(0);
@@ -103,6 +103,8 @@ internal static class Program {
             
             DrawText($"Renderer: {activeRenderer.Name}", 10, 10, 32, Color.Orange);
 
+            DrawFPS(10, GetScreenHeight() - 32);
+            
             EndDrawing();
         }
 
