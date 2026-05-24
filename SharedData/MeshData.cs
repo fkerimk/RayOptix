@@ -1,3 +1,5 @@
+using System.Numerics;
+
 internal class MeshData(int vertexCount, int triangleCount, float[] vertices, float[] normals, float[] texCoords, ushort[] indices) : SharedData {
     
     public int VertexCount = vertexCount;
@@ -8,6 +10,7 @@ internal class MeshData(int vertexCount, int triangleCount, float[] vertices, fl
     public ushort[] Indices = indices;
     
     public Raylib_cs.Mesh? RaylibMesh;
+    public OptixMesh? OptixMeshData;
 
     protected override void BuildRaylib() {
         
@@ -33,5 +36,50 @@ internal class MeshData(int vertexCount, int triangleCount, float[] vertices, fl
     protected override void UnloadRaylib() {
 
         if (RaylibMesh.HasValue) Raylib_cs.Raylib.UnloadMesh(RaylibMesh.Value);
+    }
+
+    protected override void BuildOptix() {
+
+        UnloadOptix();
+        OptixMeshData = new OptixMesh(Vertices, Normals, Indices);
+    }
+
+    protected override void UnloadOptix() {
+
+        OptixMeshData = null;
+    }
+
+    public OptixGeometry CreateOptixGeometry(Matrix4x4 matrix) {
+
+        if (OptixMeshData is null) {
+
+            throw new InvalidOperationException("OptiX mesh data has not been built.");
+        }
+
+        var geometryVertices = new float[OptixMeshData.Vertices.Length];
+        var geometryNormals = new float[OptixMeshData.Normals.Length];
+
+        for (var index = 0; index < OptixMeshData.Vertices.Length; index += 3) {
+
+            var position = Vector3.Transform(new Vector3(
+                OptixMeshData.Vertices[index],
+                OptixMeshData.Vertices[index + 1],
+                OptixMeshData.Vertices[index + 2]), matrix);
+
+            var normal = Vector3.Normalize(Vector3.TransformNormal(new Vector3(
+                OptixMeshData.Normals[index],
+                OptixMeshData.Normals[index + 1],
+                OptixMeshData.Normals[index + 2]), matrix));
+
+            geometryVertices[index] = position.X;
+            geometryVertices[index + 1] = position.Y;
+            geometryVertices[index + 2] = position.Z;
+
+            geometryNormals[index] = normal.X;
+            geometryNormals[index + 1] = normal.Y;
+            geometryNormals[index + 2] = normal.Z;
+        }
+
+        return new OptixGeometry(geometryVertices, geometryNormals, OptixMeshData.Indices);
     }
 }

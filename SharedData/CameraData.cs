@@ -7,6 +7,7 @@ internal class CameraData(Vector3 position, Vector3 target, float fov) : SharedD
     public float Fov = fov;
     
     public Raylib_cs.Camera3D? RaylibCamera;
+    public OptixCamera? OptixCameraData;
 
     protected override void BuildRaylib() {
         
@@ -25,5 +26,16 @@ internal class CameraData(Vector3 position, Vector3 target, float fov) : SharedD
     protected override void UnloadRaylib() {
 
         RaylibCamera = null;
+    }
+
+    protected override void BuildOptix() {
+
+        UnloadOptix();
+        OptixCameraData = new OptixCamera(Position, Target, Fov);
+    }
+
+    protected override void UnloadOptix() {
+
+        OptixCameraData = null;
     }
 }

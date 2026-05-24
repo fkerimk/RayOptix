@@ -9,9 +9,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private const int SamplesPerPixel = 8;
     private const int MaxErrorLength = 2048;
 
-    private readonly List<float> vertices = [];
-    private readonly List<float> normals = [];
-    private readonly List<ushort> indices = [];
+    private readonly List<DrawCall> drawCalls = [];
 
     private IntPtr nativeHandle;
     private Texture2D texture;
@@ -39,40 +37,12 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     public override void Begin() {
 
-        vertices.Clear();
-        normals.Clear();
-        indices.Clear();
+        drawCalls.Clear();
     }
 
     public override void DrawMesh(MeshData meshData, MaterialData materialData, Matrix4x4 matrix) {
 
-        var vertexOffset = vertices.Count / 3;
-
-        for (var index = 0; index < meshData.Vertices.Length; index += 3) {
-
-            var position = Vector3.Transform(new Vector3(
-                meshData.Vertices[index],
-                meshData.Vertices[index + 1],
-                meshData.Vertices[index + 2]), matrix);
-
-            var normal = Vector3.Normalize(Vector3.TransformNormal(new Vector3(
-                meshData.Normals[index],
-                meshData.Normals[index + 1],
-                meshData.Normals[index + 2]), matrix));
-
-            vertices.Add(position.X);
-            vertices.Add(position.Y);
-            vertices.Add(position.Z);
-
-            normals.Add(normal.X);
-            normals.Add(normal.Y);
-            normals.Add(normal.Z);
-        }
-
-        for (var index = 0; index < meshData.Indices.Length; index++) {
-
-            indices.Add((ushort)(meshData.Indices[index] + vertexOffset));
-        }
+        drawCalls.Add(new DrawCall(meshData, matrix));
     }
 
     public override void End() {
@@ -90,18 +60,19 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         }
 
         var error = new StringBuilder(MaxErrorLength);
-        var camera = new NativeCamera(cameraData.Position, cameraData.Target, cameraData.Fov);
+        var camera = cameraData.OptixCameraData ?? new OptixCamera(cameraData.Position, cameraData.Target, cameraData.Fov);
+        var scene = BuildSceneGeometry();
 
         if (!OptixNative.Render(nativeHandle,
                 textureWidth,
                 textureHeight,
                 camera,
-                vertices.ToArray(),
-                vertices.Count,
-                normals.ToArray(),
-                normals.Count,
-                indices.ToArray(),
-                indices.Count,
+                scene.Vertices,
+                scene.Vertices.Length,
+                scene.Normals,
+                scene.Normals.Length,
+                scene.Indices,
+                scene.Indices.Length,
                 SamplesPerPixel,
                 frameIndex++,
                 pixels,
@@ -215,13 +186,30 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         Console.WriteLine($"[OptiX] {error}");
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private readonly struct NativeCamera(Vector3 position, Vector3 target, float fovY) {
+    private OptixGeometry BuildSceneGeometry() {
 
-        public readonly Vector3 Position = position;
-        public readonly Vector3 Target = target;
-        public readonly float FovY = fovY;
+        var vertices = new List<float>();
+        var normals = new List<float>();
+        var indices = new List<ushort>();
+
+        foreach (var drawCall in drawCalls) {
+
+            var geometry = drawCall.MeshData.CreateOptixGeometry(drawCall.Matrix);
+            var vertexOffset = vertices.Count / 3;
+
+            vertices.AddRange(geometry.Vertices);
+            normals.AddRange(geometry.Normals);
+
+            for (var index = 0; index < geometry.Indices.Length; index++) {
+
+                indices.Add((ushort)(geometry.Indices[index] + vertexOffset));
+            }
+        }
+
+        return new OptixGeometry(vertices.ToArray(), normals.ToArray(), indices.ToArray());
     }
+
+    private readonly record struct DrawCall(MeshData MeshData, Matrix4x4 Matrix);
 
     private static class OptixNative {
 
@@ -244,7 +232,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             IntPtr handle,
             int width,
             int height,
-            NativeCamera camera,
+            OptixCamera camera,
             float[] vertices,
             int vertexFloatCount,
             float[] normals,
