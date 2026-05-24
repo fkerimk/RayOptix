@@ -5,34 +5,44 @@ using static Raylib_cs.Raylib;
 internal static class Program {
 
     private static void Main(string[] args) {
-        
+
         SetTraceLogLevel(TraceLogLevel.Error);
         InitWindow(1280, 720, "RayOptix");
         SetWindowMonitor(0);
 
-        var cam = new Camera3D {
+        var camera = new CameraData(new Vector3(5, 5, 5), Vector3.Zero, 60);
+        camera.Build();
+        
+        var cubeMesh = Primitive.Mesh.Cube(1);
+        cubeMesh.Build();
+        
+        var cubeMaterial = new MaterialData();
+        cubeMaterial.Build();
 
-            Up = Vector3.UnitY,
-            Projection = CameraProjection.Perspective,
-            FovY = 60,
-            Position = new Vector3(5, 5, 5),
-            Target = Vector3.Zero,
-        };
+        var raylibRenderer = new RaylibRenderer(camera);
+        raylibRenderer.Init();
+        
+        var renderer = raylibRenderer;
         
         while (!WindowShouldClose()) {
-            
+
             BeginDrawing();
-            
+
             ClearBackground(Color.DarkGray);
+
+            renderer.Begin();
+            renderer.DrawMesh(cubeMesh, cubeMaterial, Matrix4x4.Identity);
+            renderer.End();
             
-            BeginMode3D(cam);
-            
-            DrawCube(Vector3.Zero, 1, 1, 1, Color.White);
-            
-            EndMode3D();
-            
+            DrawText($"Renderer: {renderer.Name}", 10, 10, 32, Color.Orange);
+
             EndDrawing();
         }
+
+        cubeMaterial.Unload();
+        cubeMesh.Unload();
+        
+        raylibRenderer.Shutdown();
         
         CloseWindow();
     }
