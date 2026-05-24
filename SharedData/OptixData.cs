@@ -15,11 +15,12 @@ internal sealed class OptixGeometry(float[] vertices, float[] normals, ushort[] 
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal readonly struct OptixMaterial(float albedoR, float albedoG, float albedoB, int reflective, float reflectivity) {
+internal readonly struct OptixMaterial(float albedoR, float albedoG, float albedoB, float opacity, int reflective, float reflectivity) {
 
     public readonly float AlbedoR = albedoR;
     public readonly float AlbedoG = albedoG;
     public readonly float AlbedoB = albedoB;
+    public readonly float Opacity = opacity;
     public readonly int Reflective = reflective;
     public readonly float Reflectivity = reflectivity;
 }

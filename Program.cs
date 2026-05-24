@@ -34,7 +34,7 @@ internal static class Program {
         var cubeMesh = Primitive.Mesh.Cube(1);
         cubeMesh.Build();
         
-        var cubeMaterial = new MaterialData { Color = new Vector4(0.92f, 0.36f, 0.24f, 0.5f) };
+        var cubeMaterial = new MaterialData { Color = new Vector4(0.92f, 0.36f, 0.24f, 1) };
         cubeMaterial.Build();
 
         var raylibRenderer = new RaylibRenderer(camera);

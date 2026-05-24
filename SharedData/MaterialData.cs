@@ -32,6 +32,7 @@ internal unsafe class MaterialData : SharedData {
             Color.X,
             Color.Y,
             Color.Z,
+            Color.W,
             Reflectivity > 0 ? 1 : 0,
             Reflectivity);
     }

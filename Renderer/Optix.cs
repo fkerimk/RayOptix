@@ -391,6 +391,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             hash.Add(drawCall.MaterialData.Color.X);
             hash.Add(drawCall.MaterialData.Color.Y);
             hash.Add(drawCall.MaterialData.Color.Z);
+            hash.Add(drawCall.MaterialData.Color.W);
             hash.Add(drawCall.MaterialData.Reflectivity);
             AddMatrixToHash(ref hash, drawCall.Matrix);
         }

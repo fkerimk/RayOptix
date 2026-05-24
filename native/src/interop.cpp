@@ -67,6 +67,7 @@ struct NativeMaterial {
     float albedoR;
     float albedoG;
     float albedoB;
+    float opacity;
     int reflective;
     float reflectivity;
 };
@@ -191,6 +192,7 @@ struct NativeMaterial {
     float albedoR;
     float albedoG;
     float albedoB;
+    float opacity;
     int reflective;
     float reflectivity;
 };
@@ -434,6 +436,7 @@ extern "C" __global__ void __miss__ms() {
     payload->hit = 0;
     payload->hitNormal = make_float3(0.0f, 0.0f, 0.0f);
     payload->hitPosition = make_float3(0.0f, 0.0f, 0.0f);
+    payload->materialIndex = -1;
 }
 
 extern "C" __global__ void __closesthit__ch() {
@@ -534,10 +537,17 @@ extern "C" __global__ void __raygen__rg() {
             const NativeMaterial* materials = reinterpret_cast<const NativeMaterial*>(params.materials);
             const NativeMaterial material = materials[payload.materialIndex];
             const float3 albedo = make_float3(material.albedoR, material.albedoG, material.albedoB);
+            const float opacity = fminf(fmaxf(material.opacity, 0.0f), 1.0f);
 
             if (params.settings.enableNormalDebug != 0) {
                 radiance = radiance + (normal * 0.5f + make_float3(0.5f, 0.5f, 0.5f));
                 break;
+            }
+
+            if (opacity < 1.0f && Random(seed) > opacity) {
+                throughput = throughput * albedo;
+                origin = payload.hitPosition + direction * 0.001f;
+                continue;
             }
 
             radiance = radiance + throughput * albedo * params.settings.ambientIntensity;
