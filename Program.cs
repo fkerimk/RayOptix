@@ -6,6 +6,7 @@ internal static class Program {
 
     private static void Main(string[] args) {
 
+        SetConfigFlags(ConfigFlags.ResizableWindow);
         SetTraceLogLevel(TraceLogLevel.Error);
         InitWindow(1280, 720, "RayOptix");
         SetWindowMonitor(0);
@@ -20,21 +21,32 @@ internal static class Program {
         cubeMaterial.Build();
 
         var raylibRenderer = new RaylibRenderer(camera);
-        raylibRenderer.Init();
+        var optixRenderer = new OptixRenderer(camera);
+
+        Renderer[] renderers = [raylibRenderer, optixRenderer];
         
-        var renderer = raylibRenderer;
+        var activeRendererIndex = 0;
+        var activeRenderer = renderers[activeRendererIndex];
+
+        foreach (var renderer in renderers) renderer.Init();
         
         while (!WindowShouldClose()) {
+
+            if (IsKeyPressed(KeyboardKey.Space)) {
+
+                activeRendererIndex = (activeRendererIndex + 1) % renderers.Length;
+                activeRenderer = renderers[activeRendererIndex];
+            }
 
             BeginDrawing();
 
             ClearBackground(Color.DarkGray);
 
-            renderer.Begin();
-            renderer.DrawMesh(cubeMesh, cubeMaterial, Matrix4x4.Identity);
-            renderer.End();
+            activeRenderer.Begin();
+            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, Matrix4x4.Identity);
+            activeRenderer.End();
             
-            DrawText($"Renderer: {renderer.Name}", 10, 10, 32, Color.Orange);
+            DrawText($"Renderer: {activeRenderer.Name}", 10, 10, 32, Color.Orange);
 
             EndDrawing();
         }
@@ -42,7 +54,7 @@ internal static class Program {
         cubeMaterial.Unload();
         cubeMesh.Unload();
         
-        raylibRenderer.Shutdown();
+        foreach (var renderer in renderers) renderer.Shutdown();
         
         CloseWindow();
     }

@@ -5,10 +5,22 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Raylib-cs" Version="7.0.2" />
   </ItemGroup>
+
+  <Target Name="BuildNativeOptix" BeforeTargets="BeforeBuild">
+    <Exec Command="cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release" />
+    <Exec Command="cmake --build native/build -j4" />
+  </Target>
+
+  <Target Name="CopyNativeOptix" AfterTargets="Build">
+    <Copy SourceFiles="native/build/libRayOptixNative.so"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>
