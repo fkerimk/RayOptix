@@ -1,4 +1,5 @@
 using System.Numerics;
+using Raylib_cs;
 
 internal class MeshData(int vertexCount, int triangleCount, float[] vertices, float[] normals, float[] texCoords, ushort[] indices) : SharedData {
     
@@ -58,18 +59,22 @@ internal class MeshData(int vertexCount, int triangleCount, float[] vertices, fl
 
         var geometryVertices = new float[OptixMeshData.Vertices.Length];
         var geometryNormals = new float[OptixMeshData.Normals.Length];
+        var normalMatrix = matrix;
+        normalMatrix.M41 = 0;
+        normalMatrix.M42 = 0;
+        normalMatrix.M43 = 0;
 
         for (var index = 0; index < OptixMeshData.Vertices.Length; index += 3) {
 
-            var position = Vector3.Transform(new Vector3(
+            var position = Raymath.Vector3Transform(new Vector3(
                 OptixMeshData.Vertices[index],
                 OptixMeshData.Vertices[index + 1],
                 OptixMeshData.Vertices[index + 2]), matrix);
 
-            var normal = Vector3.Normalize(Vector3.TransformNormal(new Vector3(
+            var normal = Vector3.Normalize(Raymath.Vector3Transform(new Vector3(
                 OptixMeshData.Normals[index],
                 OptixMeshData.Normals[index + 1],
-                OptixMeshData.Normals[index + 2]), matrix));
+                OptixMeshData.Normals[index + 2]), normalMatrix));
 
             geometryVertices[index] = position.X;
             geometryVertices[index + 1] = position.Y;

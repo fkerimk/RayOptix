@@ -28,9 +28,42 @@ struct Float3 {
 };
 
 struct NativeCamera {
-    Float3 position;
-    Float3 target;
+    float positionX;
+    float positionY;
+    float positionZ;
+    float targetX;
+    float targetY;
+    float targetZ;
     float fovY;
+};
+
+struct NativeRenderSettings {
+    int samplesPerPixel;
+    int maxBounces;
+    int minBounces;
+    int russianRouletteStartBounce;
+    int enableAccumulation;
+    int enableSky;
+    int enableSunLight;
+    int enableHardShadows;
+    int enableNormalDebug;
+    float exposure;
+    float gamma;
+    float skyBottomR;
+    float skyBottomG;
+    float skyBottomB;
+    float skyTopR;
+    float skyTopG;
+    float skyTopB;
+    float sunDirectionX;
+    float sunDirectionY;
+    float sunDirectionZ;
+    float sunIntensity;
+    float sunAngularRadius;
+    float ambientIntensity;
+    float albedoR;
+    float albedoG;
+    float albedoB;
 };
 
 struct LaunchParams {
@@ -42,9 +75,9 @@ struct LaunchParams {
     Float3 cameraRight;
     Float3 cameraUp;
     float tanHalfFovY;
+    NativeRenderSettings settings;
     OptixTraversableHandle handle;
     unsigned int frameIndex;
-    unsigned int samplesPerPixel;
 };
 
 struct MissData {
@@ -57,6 +90,14 @@ struct HitGroupData {
     CUdeviceptr normals;
     CUdeviceptr indices;
 };
+
+struct TriangleIndices {
+    uint16_t x;
+    uint16_t y;
+    uint16_t z;
+};
+
+static_assert(sizeof(TriangleIndices) == 6, "TriangleIndices must stay tightly packed.");
 
 template <typename T>
 struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) SbtRecord {
@@ -111,6 +152,35 @@ struct Float3 {
     float z;
 };
 
+struct NativeRenderSettings {
+    int samplesPerPixel;
+    int maxBounces;
+    int minBounces;
+    int russianRouletteStartBounce;
+    int enableAccumulation;
+    int enableSky;
+    int enableSunLight;
+    int enableHardShadows;
+    int enableNormalDebug;
+    float exposure;
+    float gamma;
+    float skyBottomR;
+    float skyBottomG;
+    float skyBottomB;
+    float skyTopR;
+    float skyTopG;
+    float skyTopB;
+    float sunDirectionX;
+    float sunDirectionY;
+    float sunDirectionZ;
+    float sunIntensity;
+    float sunAngularRadius;
+    float ambientIntensity;
+    float albedoR;
+    float albedoG;
+    float albedoB;
+};
+
 struct LaunchParams {
     uchar4* image;
     unsigned int imageWidth;
@@ -120,9 +190,9 @@ struct LaunchParams {
     Float3 cameraRight;
     Float3 cameraUp;
     float tanHalfFovY;
+    NativeRenderSettings settings;
     OptixTraversableHandle handle;
     unsigned int frameIndex;
-    unsigned int samplesPerPixel;
 };
 
 struct MissData {
@@ -134,6 +204,12 @@ struct HitGroupData {
     unsigned long long vertices;
     unsigned long long normals;
     unsigned long long indices;
+};
+
+struct TriangleIndices {
+    unsigned short x;
+    unsigned short y;
+    unsigned short z;
 };
 
 struct Payload {
@@ -167,6 +243,10 @@ static __forceinline__ __device__ float3 operator+(float3 a, float3 b) {
 
 static __forceinline__ __device__ float3 operator-(float3 a, float3 b) {
     return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+static __forceinline__ __device__ float3 operator-(float3 a) {
+    return make_float3(-a.x, -a.y, -a.z);
 }
 
 static __forceinline__ __device__ float3 operator*(float3 a, float b) {
@@ -225,15 +305,26 @@ static __forceinline__ __device__ Payload* GetPayloadPointer() {
     return reinterpret_cast<Payload*>((high << 32) | low);
 }
 
+static __forceinline__ __device__ float MaxComponent(float3 value) {
+    return fmaxf(value.x, fmaxf(value.y, value.z));
+}
+
 static __forceinline__ __device__ uchar4 ToColor(float3 color) {
-    color.x = powf(fminf(fmaxf(color.x, 0.0f), 1.0f), 1.0f / 2.2f);
-    color.y = powf(fminf(fmaxf(color.y, 0.0f), 1.0f), 1.0f / 2.2f);
-    color.z = powf(fminf(fmaxf(color.z, 0.0f), 1.0f), 1.0f / 2.2f);
+    const float exposure = fmaxf(params.settings.exposure, 0.001f);
+    const float gamma = fmaxf(params.settings.gamma, 0.001f);
+    color = color * exposure;
+    color.x = powf(fminf(fmaxf(color.x, 0.0f), 1.0f), 1.0f / gamma);
+    color.y = powf(fminf(fmaxf(color.y, 0.0f), 1.0f), 1.0f / gamma);
+    color.z = powf(fminf(fmaxf(color.z, 0.0f), 1.0f), 1.0f / gamma);
     return make_uchar4(
         static_cast<unsigned char>(color.x * 255.0f),
         static_cast<unsigned char>(color.y * 255.0f),
         static_cast<unsigned char>(color.z * 255.0f),
         255);
+}
+
+static __forceinline__ __device__ float3 Lerp(float3 a, float3 b, float t) {
+    return a * (1.0f - t) + b * t;
 }
 
 static __forceinline__ __device__ float3 SampleHemisphere(float3 normal, unsigned int& seed) {
@@ -251,21 +342,58 @@ static __forceinline__ __device__ float3 SampleHemisphere(float3 normal, unsigne
         normal * sqrtf(fmaxf(0.0f, 1.0f - u1)));
 }
 
+static __forceinline__ __device__ float3 GetSkyColor(float3 direction) {
+    if (params.settings.enableSky == 0) {
+        return make_float3(0.0f, 0.0f, 0.0f);
+    }
+
+    const float t = 0.5f * (direction.y + 1.0f);
+    const float3 skyBottom = make_float3(params.settings.skyBottomR, params.settings.skyBottomG, params.settings.skyBottomB);
+    const float3 skyTop = make_float3(params.settings.skyTopR, params.settings.skyTopG, params.settings.skyTopB);
+    return Lerp(skyBottom, skyTop, t);
+}
+
+static __forceinline__ __device__ int TraceOcclusion(float3 origin, float3 direction, float maxDistance) {
+    Payload payload;
+    payload.hit = 0;
+    payload.hitPosition = make_float3(0.0f, 0.0f, 0.0f);
+    payload.hitNormal = make_float3(0.0f, 0.0f, 0.0f);
+
+    unsigned int payloadLow = static_cast<unsigned int>(reinterpret_cast<unsigned long long>(&payload));
+    unsigned int payloadHigh = static_cast<unsigned int>(reinterpret_cast<unsigned long long>(&payload) >> 32);
+
+    optixTrace(
+        params.handle,
+        origin,
+        direction,
+        0.001f,
+        maxDistance,
+        0.0f,
+        OptixVisibilityMask(255),
+        OPTIX_RAY_FLAG_DISABLE_ANYHIT,
+        0,
+        1,
+        0,
+        payloadLow,
+        payloadHigh);
+
+    return payload.hit;
+}
+
 extern "C" __global__ void __miss__ms() {
-    MissData* miss = reinterpret_cast<MissData*>(optixGetSbtDataPointer());
     Payload* payload = GetPayloadPointer();
     payload->hit = 0;
-    payload->hitNormal = make_float3(miss->skyTop.x, miss->skyTop.y, miss->skyTop.z);
-    payload->hitPosition = make_float3(miss->skyBottom.x, miss->skyBottom.y, miss->skyBottom.z);
+    payload->hitNormal = make_float3(0.0f, 0.0f, 0.0f);
+    payload->hitPosition = make_float3(0.0f, 0.0f, 0.0f);
 }
 
 extern "C" __global__ void __closesthit__ch() {
     const HitGroupData* hitData = reinterpret_cast<const HitGroupData*>(optixGetSbtDataPointer());
     const float3* normals = reinterpret_cast<const float3*>(hitData->normals);
-    const ushort3* indices = reinterpret_cast<const ushort3*>(hitData->indices);
+    const TriangleIndices* indices = reinterpret_cast<const TriangleIndices*>(hitData->indices);
 
     const unsigned int primitiveIndex = optixGetPrimitiveIndex();
-    const ushort3 triangle = indices[primitiveIndex];
+    const TriangleIndices triangle = indices[primitiveIndex];
     const float2 barycentrics = optixGetTriangleBarycentrics();
     const float b0 = 1.0f - barycentrics.x - barycentrics.y;
     const float b1 = barycentrics.x;
@@ -291,9 +419,7 @@ extern "C" __global__ void __raygen__rg() {
     const uint3 launchDimensions = optixGetLaunchDimensions();
 
     const unsigned int pixelIndex = launchIndex.y * params.imageWidth + launchIndex.x;
-    unsigned int seed = Tea(pixelIndex, params.frameIndex);
-
-    float3 accumulated = make_float3(0.0f, 0.0f, 0.0f);
+    unsigned int seed = Tea(pixelIndex, params.frameIndex + 1u);
 
     const float aspect = static_cast<float>(params.imageWidth) / static_cast<float>(params.imageHeight);
     const float3 eye = ToFloat3(params.cameraPosition);
@@ -301,7 +427,9 @@ extern "C" __global__ void __raygen__rg() {
     const float3 right = Normalize(ToFloat3(params.cameraRight));
     const float3 up = Normalize(ToFloat3(params.cameraUp));
 
-    for (unsigned int sampleIndex = 0; sampleIndex < params.samplesPerPixel; ++sampleIndex) {
+    float3 accumulated = make_float3(0.0f, 0.0f, 0.0f);
+
+    for (int sampleIndex = 0; sampleIndex < params.settings.samplesPerPixel; ++sampleIndex) {
         const float jitterX = Random(seed);
         const float jitterY = Random(seed);
 
@@ -317,7 +445,7 @@ extern "C" __global__ void __raygen__rg() {
         float3 throughput = make_float3(1.0f, 1.0f, 1.0f);
         float3 radiance = make_float3(0.0f, 0.0f, 0.0f);
 
-        for (int bounce = 0; bounce < 3; ++bounce) {
+        for (int bounce = 0; bounce < params.settings.maxBounces; ++bounce) {
             Payload payload;
             payload.hit = 0;
             payload.hitPosition = make_float3(0.0f, 0.0f, 0.0f);
@@ -342,26 +470,55 @@ extern "C" __global__ void __raygen__rg() {
                 payloadHigh);
 
             if (payload.hit == 0) {
-                const float t = 0.5f * (direction.y + 1.0f);
-                const float3 sky = make_float3(
-                    payload.hitPosition.x * (1.0f - t) + payload.hitNormal.x * t,
-                    payload.hitPosition.y * (1.0f - t) + payload.hitNormal.y * t,
-                    payload.hitPosition.z * (1.0f - t) + payload.hitNormal.z * t);
-                radiance = radiance + throughput * sky;
+                radiance = radiance + throughput * GetSkyColor(direction);
                 break;
             }
 
-            const float3 normal = Dot(payload.hitNormal, direction) < 0.0f ? payload.hitNormal : payload.hitNormal * -1.0f;
-            const float3 albedo = make_float3(0.88f, 0.52f, 0.18f);
+            const float3 normal = Dot(payload.hitNormal, direction) < 0.0f ? payload.hitNormal : -payload.hitNormal;
+            const float3 albedo = make_float3(params.settings.albedoR, params.settings.albedoG, params.settings.albedoB);
+
+            if (params.settings.enableNormalDebug != 0) {
+                radiance = radiance + (normal * 0.5f + make_float3(0.5f, 0.5f, 0.5f));
+                break;
+            }
+
+            radiance = radiance + throughput * albedo * params.settings.ambientIntensity;
+
+            if (params.settings.enableSunLight != 0) {
+                const float3 sunDirection = Normalize(make_float3(
+                    params.settings.sunDirectionX,
+                    params.settings.sunDirectionY,
+                    params.settings.sunDirectionZ));
+                const float3 toSun = -sunDirection;
+                float visibility = 1.0f;
+
+                if (params.settings.enableHardShadows != 0) {
+                    visibility = TraceOcclusion(payload.hitPosition + normal * 0.001f, toSun, 1e16f) == 0 ? 1.0f : 0.0f;
+                }
+
+                if (visibility > 0.0f) {
+                    const float ndotl = fmaxf(0.0f, Dot(normal, toSun));
+                    radiance = radiance + throughput * albedo * (params.settings.sunIntensity * ndotl * visibility);
+                }
+            }
+
             throughput = throughput * albedo;
             origin = payload.hitPosition + normal * 0.001f;
             direction = SampleHemisphere(normal, seed);
+
+            if (bounce + 1 >= params.settings.russianRouletteStartBounce) {
+                const float survivalProbability = fminf(MaxComponent(throughput), 0.95f);
+                if (bounce + 1 >= params.settings.minBounces && Random(seed) > survivalProbability) {
+                    break;
+                }
+                throughput = throughput / fmaxf(survivalProbability, 1e-4f);
+            }
         }
 
         accumulated = accumulated + radiance;
     }
 
-    params.image[pixelIndex] = ToColor(accumulated / static_cast<float>(params.samplesPerPixel));
+    params.image[pixelIndex] = ToColor(accumulated / static_cast<float>(params.settings.samplesPerPixel));
 }
 )";
 
@@ -401,13 +558,13 @@ public:
 
     void Render(
         const NativeCamera& camera,
+        const NativeRenderSettings& settings,
         const float* vertices,
         int vertexFloatCount,
         const float* normals,
         int normalFloatCount,
         const uint16_t* indices,
         int indexCount,
-        int samplesPerPixel,
         unsigned int frameIndex,
         uint8_t* outputPixels,
         int outputLength) {
@@ -430,14 +587,15 @@ public:
         params.image = reinterpret_cast<uchar4*>(imageBuffer_);
         params.imageWidth = static_cast<unsigned int>(width_);
         params.imageHeight = static_cast<unsigned int>(height_);
-        params.cameraPosition = camera.position;
-        params.cameraForward = Normalize(Subtract(camera.target, camera.position));
+        params.cameraPosition = Float3{camera.positionX, camera.positionY, camera.positionZ};
+        const Float3 target = Float3{camera.targetX, camera.targetY, camera.targetZ};
+        params.cameraForward = Normalize(Subtract(target, params.cameraPosition));
         params.cameraRight = Normalize(Cross(params.cameraForward, Float3{0.0f, 1.0f, 0.0f}));
         params.cameraUp = Normalize(Cross(params.cameraRight, params.cameraForward));
         params.tanHalfFovY = std::tan(camera.fovY * 0.5f * 3.14159265359f / 180.0f);
+        params.settings = settings;
         params.handle = gasHandle_;
         params.frameIndex = frameIndex;
-        params.samplesPerPixel = static_cast<unsigned int>(std::max(samplesPerPixel, 1));
 
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(launchParamsBuffer_), &params, sizeof(params), cudaMemcpyHostToDevice), "cudaMemcpy(launchParams)");
 
@@ -592,7 +750,7 @@ private:
     void UploadScene(const float* vertices, const float* normals, unsigned int vertexCount, const uint16_t* indices, unsigned int triangleCount) {
         const auto vertexBytes = static_cast<size_t>(vertexCount) * sizeof(float3);
         const auto normalBytes = static_cast<size_t>(vertexCount) * sizeof(float3);
-        const auto indexBytes = static_cast<size_t>(triangleCount) * sizeof(ushort3);
+        const auto indexBytes = static_cast<size_t>(triangleCount) * sizeof(TriangleIndices);
 
         EnsureBuffer(vertexBuffer_, vertexBufferCapacity_, vertexBytes);
         EnsureBuffer(normalBuffer_, normalBufferCapacity_, normalBytes);
@@ -611,7 +769,7 @@ private:
         buildInput.triangleArray.numVertices = vertexCount;
         buildInput.triangleArray.vertexBuffers = &vertexBuffer_;
         buildInput.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_UNSIGNED_SHORT3;
-        buildInput.triangleArray.indexStrideInBytes = sizeof(ushort3);
+        buildInput.triangleArray.indexStrideInBytes = sizeof(TriangleIndices);
         buildInput.triangleArray.numIndexTriplets = triangleCount;
         buildInput.triangleArray.indexBuffer = indexBuffer_;
         buildInput.triangleArray.flags = flags;
@@ -865,13 +1023,13 @@ extern "C" bool roptixRender(
     int width,
     int height,
     NativeCamera camera,
+    NativeRenderSettings settings,
     const float* vertices,
     int vertexFloatCount,
     const float* normals,
     int normalFloatCount,
     const uint16_t* indices,
     int indexCount,
-    int samplesPerPixel,
     unsigned int frameIndex,
     uint8_t* outputPixels,
     int outputLength,
@@ -884,7 +1042,7 @@ extern "C" bool roptixRender(
 
         auto* renderer = static_cast<NativeRenderer*>(handle);
         renderer->Resize(width, height);
-        renderer->Render(camera, vertices, vertexFloatCount, normals, normalFloatCount, indices, indexCount, samplesPerPixel, frameIndex, outputPixels, outputLength);
+        renderer->Render(camera, settings, vertices, vertexFloatCount, normals, normalFloatCount, indices, indexCount, frameIndex, outputPixels, outputLength);
         CopyError(error, errorCapacity, "");
         return true;
     } catch (const std::exception& exception) {

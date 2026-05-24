@@ -13,4 +13,13 @@ internal class MaterialData : SharedData {
 
         if (RaylibMaterial.HasValue) Raylib_cs.Raylib.UnloadMaterial(RaylibMaterial.Value);
     }
+
+    protected override void BuildOptix() {
+        
+    }
+
+    protected override void UnloadOptix() {
+        
+        
+    }
 }

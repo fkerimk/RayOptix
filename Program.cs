@@ -32,6 +32,10 @@ internal static class Program {
         
         while (!WindowShouldClose()) {
 
+            //freecamhere
+            
+            camera.Build();
+            
             if (IsKeyPressed(KeyboardKey.Space)) {
 
                 activeRendererIndex = (activeRendererIndex + 1) % renderers.Length;

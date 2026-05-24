@@ -6,8 +6,56 @@ using static Raylib_cs.Raylib;
 
 internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
-    private const int SamplesPerPixel = 8;
     private const int MaxErrorLength = 2048;
+
+    private static class Settings {
+
+        public static class Quality {
+            public const int SamplesPerPixel = 16;
+            public const int MaxBounces = 4;
+            public const int MinBounces = 1;
+            public const int RussianRouletteStartBounce = 2;
+            public const bool EnableAccumulation = false;
+            public const bool ResetAccumulationOnResize = true;
+        }
+
+        public static class Lighting {
+            public const bool EnableSky = true;
+            public const bool EnableSunLight = true;
+            public const float AmbientIntensity = 0.08f;
+            public const float SunDirectionX = -0.6f;
+            public const float SunDirectionY = -1.0f;
+            public const float SunDirectionZ = -0.35f;
+            public const float SunIntensity = 1.75f;
+            public const float SunAngularRadius = 0.0f;
+            public const float SkyBottomR = 0.95f;
+            public const float SkyBottomG = 0.97f;
+            public const float SkyBottomB = 1.00f;
+            public const float SkyTopR = 0.55f;
+            public const float SkyTopG = 0.72f;
+            public const float SkyTopB = 0.95f;
+        }
+
+        public static class Shadows {
+            public const bool EnableHardShadows = true;
+        }
+
+        public static class Materials {
+            public const float DefaultAlbedoR = 0.88f;
+            public const float DefaultAlbedoG = 0.52f;
+            public const float DefaultAlbedoB = 0.18f;
+        }
+
+        public static class Presentation {
+            public const float Exposure = 1.0f;
+            public const float Gamma = 2.2f;
+        }
+
+        public static class Debug {
+            public const bool EnableNormalDebug = false;
+            public const bool LogNativeErrors = true;
+        }
+    }
 
     private readonly List<DrawCall> drawCalls = [];
 
@@ -60,20 +108,27 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         }
 
         var error = new StringBuilder(MaxErrorLength);
-        var camera = cameraData.OptixCameraData ?? new OptixCamera(cameraData.Position, cameraData.Target, cameraData.Fov);
+        var camera = cameraData.OptixCameraData ?? new OptixCamera(
+            cameraData.Position.X,
+            cameraData.Position.Y,
+            cameraData.Position.Z,
+            cameraData.Target.X,
+            cameraData.Target.Y,
+            cameraData.Target.Z,
+            cameraData.Fov);
         var scene = BuildSceneGeometry();
 
         if (!OptixNative.Render(nativeHandle,
                 textureWidth,
                 textureHeight,
                 camera,
+                BuildSettings(),
                 scene.Vertices,
                 scene.Vertices.Length,
                 scene.Normals,
                 scene.Normals.Length,
                 scene.Indices,
                 scene.Indices.Length,
-                SamplesPerPixel,
                 frameIndex++,
                 pixels,
                 pixels.Length,
@@ -140,7 +195,10 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         texture = LoadTextureFromImage(image);
         UnloadImage(image);
 
-        frameIndex = 0;
+        if (Settings.Quality.ResetAccumulationOnResize) {
+
+            frameIndex = 0;
+        }
 
         if (nativeHandle != IntPtr.Zero) {
 
@@ -177,7 +235,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     private void LogErrorOnce(string? error) {
 
-        if (string.IsNullOrWhiteSpace(error) || error == lastLoggedError) {
+        if (!Settings.Debug.LogNativeErrors || string.IsNullOrWhiteSpace(error) || error == lastLoggedError) {
 
             return;
         }
@@ -209,6 +267,42 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         return new OptixGeometry(vertices.ToArray(), normals.ToArray(), indices.ToArray());
     }
 
+    private static OptixRenderSettings BuildSettings() {
+
+        return new OptixRenderSettings(
+            Settings.Quality.SamplesPerPixel,
+            Settings.Quality.MaxBounces,
+            Settings.Quality.MinBounces,
+            Settings.Quality.RussianRouletteStartBounce,
+            BoolToInt(Settings.Quality.EnableAccumulation),
+            BoolToInt(Settings.Lighting.EnableSky),
+            BoolToInt(Settings.Lighting.EnableSunLight),
+            BoolToInt(Settings.Shadows.EnableHardShadows),
+            BoolToInt(Settings.Debug.EnableNormalDebug),
+            Settings.Presentation.Exposure,
+            Settings.Presentation.Gamma,
+            Settings.Lighting.SkyBottomR,
+            Settings.Lighting.SkyBottomG,
+            Settings.Lighting.SkyBottomB,
+            Settings.Lighting.SkyTopR,
+            Settings.Lighting.SkyTopG,
+            Settings.Lighting.SkyTopB,
+            Settings.Lighting.SunDirectionX,
+            Settings.Lighting.SunDirectionY,
+            Settings.Lighting.SunDirectionZ,
+            Settings.Lighting.SunIntensity,
+            Settings.Lighting.SunAngularRadius,
+            Settings.Lighting.AmbientIntensity,
+            Settings.Materials.DefaultAlbedoR,
+            Settings.Materials.DefaultAlbedoG,
+            Settings.Materials.DefaultAlbedoB);
+    }
+
+    private static int BoolToInt(bool value) {
+
+        return value ? 1 : 0;
+    }
+
     private readonly record struct DrawCall(MeshData MeshData, Matrix4x4 Matrix);
 
     private static class OptixNative {
@@ -233,13 +327,13 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             int width,
             int height,
             OptixCamera camera,
+            OptixRenderSettings settings,
             float[] vertices,
             int vertexFloatCount,
             float[] normals,
             int normalFloatCount,
             ushort[] indices,
             int indexCount,
-            int samplesPerPixel,
             uint frameIndex,
             byte[] outputPixels,
             int outputLength,

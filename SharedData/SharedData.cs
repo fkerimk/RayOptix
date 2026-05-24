@@ -14,13 +14,7 @@ internal abstract class SharedData {
 
     protected abstract void BuildRaylib();
     protected abstract void UnloadRaylib();
-    protected virtual void BuildOptix() {
-        
-        // optional
-    }
+    protected abstract void BuildOptix();
 
-    protected virtual void UnloadOptix() {
-        
-        // optional
-    }
+    protected abstract void UnloadOptix();
 }

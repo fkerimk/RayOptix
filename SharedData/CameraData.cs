@@ -31,7 +31,15 @@ internal class CameraData(Vector3 position, Vector3 target, float fov) : SharedD
     protected override void BuildOptix() {
 
         UnloadOptix();
-        OptixCameraData = new OptixCamera(Position, Target, Fov);
+        
+        OptixCameraData = new OptixCamera(
+            Position.X,
+            Position.Y,
+            Position.Z,
+            Target.X,
+            Target.Y,
+            Target.Z,
+            Fov);
     }
 
     protected override void UnloadOptix() {
