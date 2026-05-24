@@ -43,7 +43,8 @@ internal static class Program {
             ClearBackground(Color.DarkGray);
 
             activeRenderer.Begin();
-            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, Matrix4x4.Identity);
+            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, Raymath.MatrixTranslate(0, 0, 0));
+            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, Raymath.MatrixTranslate(3, 0, 0));
             activeRenderer.End();
             
             DrawText($"Renderer: {activeRenderer.Name}", 10, 10, 32, Color.Orange);

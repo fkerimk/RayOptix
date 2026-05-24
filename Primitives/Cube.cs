@@ -1,6 +1,6 @@
 internal static partial class Primitive {
     
-    internal static partial class Mesh {
+    internal static class Mesh {
 
         public static MeshData Cube(float size) {
             
