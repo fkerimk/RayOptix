@@ -3,17 +3,23 @@ internal static partial class Primitive {
     internal static class Mesh {
 
         public static MeshData Cube(float size) {
+            return Cube(size, size, size);
+        }
+
+        public static MeshData Cube(float sizeX, float sizeY, float sizeZ) {
             
-            var half = size * 0.5f;
+            var halfX = sizeX * 0.5f;
+            var halfY = sizeY * 0.5f;
+            var halfZ = sizeZ * 0.5f;
 
             float[] vertices = [
                 
-                -half, -half,  half,   half, -half,  half,   half,  half,  half,  -half,  half,  half,
-                 half, -half, -half,  -half, -half, -half,  -half,  half, -half,   half,  half, -half,
-                -half, -half, -half,  -half, -half,  half,  -half,  half,  half,  -half,  half, -half,
-                 half, -half,  half,   half, -half, -half,   half,  half, -half,   half,  half,  half,
-                -half,  half,  half,   half,  half,  half,   half,  half, -half,  -half,  half, -half,
-                -half, -half, -half,   half, -half, -half,   half, -half,  half,  -half, -half,  half,
+                -halfX, -halfY,  halfZ,   halfX, -halfY,  halfZ,   halfX,  halfY,  halfZ,  -halfX,  halfY,  halfZ,
+                 halfX, -halfY, -halfZ,  -halfX, -halfY, -halfZ,  -halfX,  halfY, -halfZ,   halfX,  halfY, -halfZ,
+                -halfX, -halfY, -halfZ,  -halfX, -halfY,  halfZ,  -halfX,  halfY,  halfZ,  -halfX,  halfY, -halfZ,
+                 halfX, -halfY,  halfZ,   halfX, -halfY, -halfZ,   halfX,  halfY, -halfZ,   halfX,  halfY,  halfZ,
+                -halfX,  halfY,  halfZ,   halfX,  halfY,  halfZ,   halfX,  halfY, -halfZ,  -halfX,  halfY, -halfZ,
+                -halfX, -halfY, -halfZ,   halfX, -halfY, -halfZ,   halfX, -halfY,  halfZ,  -halfX, -halfY,  halfZ,
             ];
 
             float[] normals = [

@@ -15,12 +15,21 @@ internal static class Program {
         InitWindow(1280, 720, "RayOptix");
         SetWindowMonitor(0);
 
-        var camera = new CameraData(new Vector3(5, 5, 5), Vector3.Zero, 60);
+        var camera = new CameraData(new Vector3(-5, 5, 5), Vector3.Zero, 60);
         camera.Build();
 
         var initialForward = Vector3.Normalize(camera.Target - camera.Position);
         var yaw = MathF.Atan2(initialForward.Z, initialForward.X);
         var pitch = MathF.Asin(initialForward.Y);
+        
+        var surfaceMesh = Primitive.Mesh.Cube(5, 0.25f, 5);
+        surfaceMesh.Build();
+        
+        var floorMaterial = new MaterialData();
+        floorMaterial.Build();
+        
+        var wallMaterial = new MaterialData();
+        wallMaterial.Build();
         
         var cubeMesh = Primitive.Mesh.Cube(1);
         cubeMesh.Build();
@@ -85,8 +94,11 @@ internal static class Program {
 
             activeRenderer.Begin();
             
-            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(-1, MathF.Sin((float)GetTime()), 0), new Vector3(0, (float)GetTime(), 0), Vector3.One));
-            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(1, MathF.Cos((float)GetTime()), 0), new Vector3(0, -(float)GetTime(), 0), Vector3.One));
+            activeRenderer.DrawMesh(surfaceMesh, floorMaterial, TransformMatrix(new Vector3(0, -0.125f, 0), Vector3.Zero, Vector3.One));
+            activeRenderer.DrawMesh(surfaceMesh, wallMaterial, TransformMatrix(new Vector3(2.5f - 0.125f, 2.5f - 0.125f, 0), new Vector3(90, 0, 0), Vector3.One));
+            
+            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(0, MathF.Sin((float)GetTime()) + 2.5f, -1), new Vector3(0,  (float)GetTime() * 90, 0), Vector3.One));
+            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(0, MathF.Cos((float)GetTime()) + 2.5f,  1), new Vector3(0, -(float)GetTime() * 90, 0), Vector3.One));
             
             activeRenderer.End();
             
@@ -106,7 +118,7 @@ internal static class Program {
     private static Matrix4x4 TransformMatrix(Vector3 position, Vector3 rotation, Vector3 scale) {
 
         var positionMatrix = Raymath.MatrixTranslate(position.X, position.Y, position.Z);
-        var rotationMatrix = Raymath.QuaternionToMatrix(Raymath.QuaternionFromEuler(rotation.Z, rotation.Y, rotation.X));
+        var rotationMatrix = Raymath.QuaternionToMatrix(Raymath.QuaternionFromEuler(rotation.Z * DEG2RAD, rotation.Y * DEG2RAD, rotation.X * DEG2RAD));
         var scaleMatrix = Raymath.MatrixScale(scale.X, scale.Y, scale.Z);
         
         return Raymath.MatrixMultiply(Raymath.MatrixMultiply(scaleMatrix, rotationMatrix), positionMatrix);
