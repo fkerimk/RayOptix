@@ -68,6 +68,7 @@ struct NativeRenderSettings {
 
 struct LaunchParams {
     uchar4* image;
+    float4* accumulation;
     unsigned int imageWidth;
     unsigned int imageHeight;
     Float3 cameraPosition;
@@ -183,6 +184,7 @@ struct NativeRenderSettings {
 
 struct LaunchParams {
     uchar4* image;
+    float4* accumulation;
     unsigned int imageWidth;
     unsigned int imageHeight;
     Float3 cameraPosition;
@@ -327,13 +329,38 @@ static __forceinline__ __device__ float3 Lerp(float3 a, float3 b, float t) {
     return a * (1.0f - t) + b * t;
 }
 
+static __forceinline__ __device__ float3 BuildTangent(float3 normal) {
+    return Normalize(fabsf(normal.x) > 0.1f ? Cross(make_float3(0.0f, 1.0f, 0.0f), normal) : Cross(make_float3(1.0f, 0.0f, 0.0f), normal));
+}
+
+static __forceinline__ __device__ float3 SampleCone(float3 direction, float angleRadians, unsigned int& seed) {
+    if (angleRadians <= 1e-6f) {
+        return Normalize(direction);
+    }
+
+    const float u1 = Random(seed);
+    const float u2 = Random(seed);
+    const float cosThetaMax = cosf(angleRadians);
+    const float cosTheta = 1.0f - u1 * (1.0f - cosThetaMax);
+    const float sinTheta = sqrtf(fmaxf(0.0f, 1.0f - cosTheta * cosTheta));
+    const float phi = 6.28318530718f * u2;
+
+    const float3 tangent = BuildTangent(direction);
+    const float3 bitangent = Cross(direction, tangent);
+
+    return Normalize(
+        tangent * (sinTheta * cosf(phi)) +
+        bitangent * (sinTheta * sinf(phi)) +
+        direction * cosTheta);
+}
+
 static __forceinline__ __device__ float3 SampleHemisphere(float3 normal, unsigned int& seed) {
     const float u1 = Random(seed);
     const float u2 = Random(seed);
     const float radius = sqrtf(u1);
     const float phi = 6.28318530718f * u2;
 
-    const float3 tangent = Normalize(fabsf(normal.x) > 0.1f ? Cross(make_float3(0.0f, 1.0f, 0.0f), normal) : Cross(make_float3(1.0f, 0.0f, 0.0f), normal));
+    const float3 tangent = BuildTangent(normal);
     const float3 bitangent = Cross(normal, tangent);
 
     return Normalize(
@@ -389,6 +416,7 @@ extern "C" __global__ void __miss__ms() {
 
 extern "C" __global__ void __closesthit__ch() {
     const HitGroupData* hitData = reinterpret_cast<const HitGroupData*>(optixGetSbtDataPointer());
+    const float3* vertices = reinterpret_cast<const float3*>(hitData->vertices);
     const float3* normals = reinterpret_cast<const float3*>(hitData->normals);
     const TriangleIndices* indices = reinterpret_cast<const TriangleIndices*>(hitData->indices);
 
@@ -399,10 +427,12 @@ extern "C" __global__ void __closesthit__ch() {
     const float b1 = barycentrics.x;
     const float b2 = barycentrics.y;
 
-    const float3 n0 = normals[triangle.x];
-    const float3 n1 = normals[triangle.y];
-    const float3 n2 = normals[triangle.z];
-    const float3 interpolatedNormal = Normalize(n0 * b0 + n1 * b1 + n2 * b2);
+    const float3 v0 = vertices[triangle.x];
+    const float3 v1 = vertices[triangle.y];
+    const float3 v2 = vertices[triangle.z];
+
+    const float3 geometricNormal = Normalize(Cross(v1 - v0, v2 - v0));
+    const float3 facingNormal = optixIsFrontFaceHit() ? geometricNormal : -geometricNormal;
 
     const float3 origin = optixGetWorldRayOrigin();
     const float3 direction = optixGetWorldRayDirection();
@@ -410,7 +440,7 @@ extern "C" __global__ void __closesthit__ch() {
 
     Payload* payload = GetPayloadPointer();
     payload->hit = 1;
-    payload->hitNormal = Normalize(interpolatedNormal);
+    payload->hitNormal = Normalize(facingNormal);
     payload->hitPosition = origin + direction * distance;
 }
 
@@ -419,7 +449,8 @@ extern "C" __global__ void __raygen__rg() {
     const uint3 launchDimensions = optixGetLaunchDimensions();
 
     const unsigned int pixelIndex = launchIndex.y * params.imageWidth + launchIndex.x;
-    unsigned int seed = Tea(pixelIndex, params.frameIndex + 1u);
+    const unsigned int seedFrame = params.settings.enableAccumulation != 0 ? (params.frameIndex + 1u) : 1u;
+    unsigned int seed = Tea(pixelIndex, seedFrame);
 
     const float aspect = static_cast<float>(params.imageWidth) / static_cast<float>(params.imageHeight);
     const float3 eye = ToFloat3(params.cameraPosition);
@@ -489,7 +520,7 @@ extern "C" __global__ void __raygen__rg() {
                     params.settings.sunDirectionX,
                     params.settings.sunDirectionY,
                     params.settings.sunDirectionZ));
-                const float3 toSun = -sunDirection;
+                const float3 toSun = SampleCone(-sunDirection, fmaxf(params.settings.sunAngularRadius, 0.0f), seed);
                 float visibility = 1.0f;
 
                 if (params.settings.enableHardShadows != 0) {
@@ -518,7 +549,19 @@ extern "C" __global__ void __raygen__rg() {
         accumulated = accumulated + radiance;
     }
 
-    params.image[pixelIndex] = ToColor(accumulated / static_cast<float>(params.settings.samplesPerPixel));
+    const float3 sampleRadiance = accumulated / static_cast<float>(params.settings.samplesPerPixel);
+
+    if (params.settings.enableAccumulation != 0) {
+        const float4 previous = params.frameIndex == 0
+            ? make_float4(0.0f, 0.0f, 0.0f, 0.0f)
+            : params.accumulation[pixelIndex];
+        const float3 sum = make_float3(previous.x, previous.y, previous.z) + sampleRadiance;
+        params.accumulation[pixelIndex] = make_float4(sum.x, sum.y, sum.z, 0.0f);
+        params.image[pixelIndex] = ToColor(sum / static_cast<float>(params.frameIndex + 1u));
+        return;
+    }
+
+    params.image[pixelIndex] = ToColor(sampleRadiance);
 }
 )";
 
@@ -554,6 +597,15 @@ public:
 
         const auto imageSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(uchar4);
         CheckCuda(cudaMalloc(reinterpret_cast<void**>(&imageBuffer_), imageSize), "cudaMalloc(imageBuffer)");
+
+        if (accumulationBuffer_ != 0) {
+            CheckCuda(cudaFree(reinterpret_cast<void*>(accumulationBuffer_)), "cudaFree(accumulationBuffer)");
+            accumulationBuffer_ = 0;
+        }
+
+        const auto accumulationSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&accumulationBuffer_), accumulationSize), "cudaMalloc(accumulationBuffer)");
+        CheckCuda(cudaMemset(reinterpret_cast<void*>(accumulationBuffer_), 0, accumulationSize), "cudaMemset(accumulationBuffer)");
     }
 
     void Render(
@@ -585,6 +637,7 @@ public:
 
         LaunchParams params{};
         params.image = reinterpret_cast<uchar4*>(imageBuffer_);
+        params.accumulation = reinterpret_cast<float4*>(accumulationBuffer_);
         params.imageWidth = static_cast<unsigned int>(width_);
         params.imageHeight = static_cast<unsigned int>(height_);
         params.cameraPosition = Float3{camera.positionX, camera.positionY, camera.positionZ};
@@ -852,6 +905,7 @@ private:
 
     void Destroy() {
         SafeCudaFree(imageBuffer_);
+        SafeCudaFree(accumulationBuffer_);
         SafeCudaFree(launchParamsBuffer_);
         SafeCudaFree(raygenRecordBuffer_);
         SafeCudaFree(missRecordBuffer_);
@@ -953,6 +1007,7 @@ private:
     int height_ = 0;
 
     CUdeviceptr imageBuffer_ = 0;
+    CUdeviceptr accumulationBuffer_ = 0;
     CUdeviceptr launchParamsBuffer_ = 0;
     CUdeviceptr raygenRecordBuffer_ = 0;
     CUdeviceptr missRecordBuffer_ = 0;

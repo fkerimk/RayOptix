@@ -84,8 +84,10 @@ internal static class Program {
             ClearBackground(Color.DarkGray);
 
             activeRenderer.Begin();
-            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, Raymath.MatrixTranslate(0, 0, 0));
-            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, Raymath.MatrixTranslate(3, 0, 0));
+            
+            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(-1, MathF.Sin((float)GetTime()), 0), new Vector3(0, (float)GetTime(), 0), Vector3.One));
+            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(1, MathF.Cos((float)GetTime()), 0), new Vector3(0, -(float)GetTime(), 0), Vector3.One));
+            
             activeRenderer.End();
             
             DrawText($"Renderer: {activeRenderer.Name}", 10, 10, 32, Color.Orange);
@@ -99,6 +101,15 @@ internal static class Program {
         foreach (var renderer in renderers) renderer.Shutdown();
         
         CloseWindow();
+    }
+
+    private static Matrix4x4 TransformMatrix(Vector3 position, Vector3 rotation, Vector3 scale) {
+
+        var positionMatrix = Raymath.MatrixTranslate(position.X, position.Y, position.Z);
+        var rotationMatrix = Raymath.QuaternionToMatrix(Raymath.QuaternionFromEuler(rotation.Z, rotation.Y, rotation.X));
+        var scaleMatrix = Raymath.MatrixScale(scale.X, scale.Y, scale.Z);
+        
+        return Raymath.MatrixMultiply(Raymath.MatrixMultiply(scaleMatrix, rotationMatrix), positionMatrix);
     }
 
     private static Vector3 GetForward(float yaw, float pitch) {

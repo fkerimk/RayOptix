@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using Raylib_cs;
@@ -15,13 +16,13 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             public const int MaxBounces = 4;
             public const int MinBounces = 1;
             public const int RussianRouletteStartBounce = 2;
-            public const bool EnableAccumulation = false;
+            public const bool EnableAccumulation = true;
             public const bool ResetAccumulationOnResize = true;
         }
 
         public static class Lighting {
-            public const bool EnableSky = true;
-            public const bool EnableSunLight = true;
+            public static bool EnableSky = true;
+            public static bool EnableSunLight = true;
             public const float AmbientIntensity = 0.08f;
             public const float SunDirectionX = -0.6f;
             public const float SunDirectionY = -1.0f;
@@ -37,7 +38,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         }
 
         public static class Shadows {
-            public const bool EnableHardShadows = true;
+            public static bool EnableHardShadows = true;
         }
 
         public static class Materials {
@@ -52,8 +53,8 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         }
 
         public static class Debug {
-            public const bool EnableNormalDebug = false;
-            public const bool LogNativeErrors = true;
+            public static bool EnableNormalDebug = false;
+            public static bool LogNativeErrors = true;
         }
     }
 
@@ -65,6 +66,8 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private int textureWidth;
     private int textureHeight;
     private uint frameIndex;
+    private OptixCamera? previousCamera;
+    private int previousSceneSignature;
     private string? initError;
     private bool initAttempted;
     private string? lastLoggedError;
@@ -95,6 +98,8 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     public override void End() {
 
+        HandleDebugInput();
+
         EnsureTextureSize();
 
         if (initError is not null || nativeHandle == IntPtr.Zero || pixels is null) {
@@ -116,13 +121,16 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             cameraData.Target.Y,
             cameraData.Target.Z,
             cameraData.Fov);
+        var settings = BuildSettings();
+        var sceneSignature = ComputeSceneSignature();
+        ResetAccumulationIfNeeded(camera, sceneSignature, settings);
         var scene = BuildSceneGeometry();
 
         if (!OptixNative.Render(nativeHandle,
                 textureWidth,
                 textureHeight,
                 camera,
-                BuildSettings(),
+                settings,
                 scene.Vertices,
                 scene.Vertices.Length,
                 scene.Normals,
@@ -156,6 +164,8 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             Vector2.Zero,
             0,
             Color.White);
+
+        DrawDebugState();
     }
 
     public override void Shutdown() {
@@ -198,6 +208,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         if (Settings.Quality.ResetAccumulationOnResize) {
 
             frameIndex = 0;
+            previousSceneSignature = 0;
         }
 
         if (nativeHandle != IntPtr.Zero) {
@@ -231,6 +242,41 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private void DrawUnavailable() {
 
         DrawText("OptiX backend unavailable", 10, 56, 24, Color.Red);
+    }
+
+    private void HandleDebugInput() {
+
+        var stateChanged = false;
+
+        if (IsKeyPressed(KeyboardKey.F1)) {
+
+            Settings.Debug.EnableNormalDebug = !Settings.Debug.EnableNormalDebug;
+            stateChanged = true;
+        }
+
+        if (IsKeyPressed(KeyboardKey.F2)) {
+
+            Settings.Lighting.EnableSunLight = !Settings.Lighting.EnableSunLight;
+            stateChanged = true;
+        }
+
+        if (IsKeyPressed(KeyboardKey.F3)) {
+
+            Settings.Shadows.EnableHardShadows = !Settings.Shadows.EnableHardShadows;
+            stateChanged = true;
+        }
+
+        if (stateChanged) {
+
+            frameIndex = 0;
+        }
+    }
+
+    private void DrawDebugState() {
+
+        DrawText($"F1 Normal Debug: {(Settings.Debug.EnableNormalDebug ? "ON" : "OFF")}", 10, 56, 20, Color.DarkBlue);
+        DrawText($"F2 Sun Light: {(Settings.Lighting.EnableSunLight ? "ON" : "OFF")}", 10, 80, 20, Color.DarkBlue);
+        DrawText($"F3 Hard Shadows: {(Settings.Shadows.EnableHardShadows ? "ON" : "OFF")}", 10, 104, 20, Color.DarkBlue);
     }
 
     private void LogErrorOnce(string? error) {
@@ -301,6 +347,71 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private static int BoolToInt(bool value) {
 
         return value ? 1 : 0;
+    }
+
+    private void ResetAccumulationIfNeeded(OptixCamera camera, int sceneSignature, OptixRenderSettings settings) {
+
+        if (settings.EnableAccumulation == 0) {
+
+            frameIndex = 0;
+            previousCamera = camera;
+            previousSceneSignature = sceneSignature;
+            return;
+        }
+
+        if (previousCamera is not OptixCamera lastCamera ||
+            !AreEqual(lastCamera, camera) ||
+            previousSceneSignature != sceneSignature) {
+
+            frameIndex = 0;
+        }
+
+        previousCamera = camera;
+        previousSceneSignature = sceneSignature;
+    }
+
+    private int ComputeSceneSignature() {
+
+        var hash = new HashCode();
+
+        foreach (var drawCall in drawCalls) {
+
+            hash.Add(RuntimeHelpers.GetHashCode(drawCall.MeshData));
+            AddMatrixToHash(ref hash, drawCall.Matrix);
+        }
+
+        return hash.ToHashCode();
+    }
+
+    private static bool AreEqual(OptixCamera left, OptixCamera right) {
+
+        return left.PositionX == right.PositionX &&
+               left.PositionY == right.PositionY &&
+               left.PositionZ == right.PositionZ &&
+               left.TargetX == right.TargetX &&
+               left.TargetY == right.TargetY &&
+               left.TargetZ == right.TargetZ &&
+               left.FovY == right.FovY;
+    }
+
+    private static void AddMatrixToHash(ref HashCode hash, Matrix4x4 matrix) {
+
+        hash.Add(matrix.M11);
+        hash.Add(matrix.M12);
+        hash.Add(matrix.M13);
+        hash.Add(matrix.M14);
+        hash.Add(matrix.M21);
+        hash.Add(matrix.M22);
+        hash.Add(matrix.M23);
+        hash.Add(matrix.M24);
+        hash.Add(matrix.M31);
+        hash.Add(matrix.M32);
+        hash.Add(matrix.M33);
+        hash.Add(matrix.M34);
+        hash.Add(matrix.M41);
+        hash.Add(matrix.M42);
+        hash.Add(matrix.M43);
+        hash.Add(matrix.M44);
     }
 
     private readonly record struct DrawCall(MeshData MeshData, Matrix4x4 Matrix);
