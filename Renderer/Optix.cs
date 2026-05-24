@@ -12,7 +12,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private static class Settings {
 
         public static class Quality {
-            public const int SamplesPerPixel = 1;
+            public const int SamplesPerPixel = 16;
             public const int MaxBounces = 4;
             public const int MinBounces = 1;
             public const int RussianRouletteStartBounce = 2;

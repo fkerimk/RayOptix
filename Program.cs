@@ -78,6 +78,8 @@ internal static class Program {
 
                 camera.Target = camera.Position + forward;
             }
+
+            camera.Fov -= GetMouseWheelMove() * 5;
             
             camera.Build();
             
@@ -95,9 +97,11 @@ internal static class Program {
             
             activeRenderer.DrawMesh(surfaceMesh, floorMaterial, TransformMatrix(new Vector3(0, -0.125f, 0), Vector3.Zero, Vector3.One));
             activeRenderer.DrawMesh(surfaceMesh, wallMaterial, TransformMatrix(new Vector3(2.5f - 0.125f, 2.5f - 0.125f, 0), new Vector3(90, 0, 0), Vector3.One));
-            
+
+            //for (int i = 0; i < 128; i++) { // performance test
             activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(0, MathF.Sin((float)GetTime()) + 2.5f, -1), new Vector3(0,  (float)GetTime() * 90, 0), Vector3.One));
             activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(0, MathF.Cos((float)GetTime()) + 2.5f,  1), new Vector3(0, -(float)GetTime() * 90, 0), Vector3.One));
+            //}
             
             activeRenderer.End();
             
