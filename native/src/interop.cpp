@@ -1,6 +1,10 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <nvrtc.h>
+#include <nvsdk_ngx.h>
+#include <nvsdk_ngx_defs.h>
+#include <nvsdk_ngx_helpers_dlssd_cuda.h>
+#include <nvsdk_ngx_params.h>
 #include <optix.h>
 #include <optix_function_table_definition.h>
 #include <optix_stubs.h>
@@ -13,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -62,6 +67,10 @@ struct NativeRenderSettings {
     float sunIntensity;
     float sunAngularRadius;
     float ambientIntensity;
+    int enableDlss;
+    int dlssPerfQuality;
+    float jitterOffsetX;
+    float jitterOffsetY;
 };
 
 struct NativeMaterial {
@@ -76,6 +85,12 @@ struct NativeMaterial {
 struct LaunchParams {
     float4* beauty;
     float4* accumulation;
+    float* depth;
+    float4* worldPosition;
+    float4* normals;
+    float* roughness;
+    float4* diffuseAlbedo;
+    float4* specularAlbedo;
     CUdeviceptr materials;
     unsigned int imageWidth;
     unsigned int imageHeight;
@@ -87,6 +102,10 @@ struct LaunchParams {
     NativeRenderSettings settings;
     OptixTraversableHandle handle;
     unsigned int frameIndex;
+    float previousViewProjection[16];
+    float currentViewProjection[16];
+    float worldToView[16];
+    float viewToClip[16];
 };
 
 struct MissData {
@@ -188,6 +207,10 @@ struct NativeRenderSettings {
     float sunIntensity;
     float sunAngularRadius;
     float ambientIntensity;
+    int enableDlss;
+    int dlssPerfQuality;
+    float jitterOffsetX;
+    float jitterOffsetY;
 };
 
 struct NativeMaterial {
@@ -202,6 +225,12 @@ struct NativeMaterial {
 struct LaunchParams {
     float4* beauty;
     float4* accumulation;
+    float* depth;
+    float4* worldPosition;
+    float4* normals;
+    float* roughness;
+    float4* diffuseAlbedo;
+    float4* specularAlbedo;
     unsigned long long materials;
     unsigned int imageWidth;
     unsigned int imageHeight;
@@ -213,6 +242,10 @@ struct LaunchParams {
     NativeRenderSettings settings;
     OptixTraversableHandle handle;
     unsigned int frameIndex;
+    float previousViewProjection[16];
+    float currentViewProjection[16];
+    float worldToView[16];
+    float viewToClip[16];
 };
 
 struct MissData {
@@ -380,6 +413,14 @@ static __forceinline__ __device__ float3 Reflect(float3 incident, float3 normal)
     return incident - normal * (2.0f * Dot(incident, normal));
 }
 
+static __forceinline__ __device__ float4 MulPoint(const float* matrix, float3 point) {
+    return make_float4(
+        matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3],
+        matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
+        matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
+        matrix[12] * point.x + matrix[13] * point.y + matrix[14] * point.z + matrix[15]);
+}
+
 static __forceinline__ __device__ float3 GetSkyColor(float3 direction) {
     if (params.settings.enableSky == 0) {
         return make_float3(0.0f, 0.0f, 0.0f);
@@ -472,15 +513,18 @@ extern "C" __global__ void __raygen__rg() {
     const float3 forward = Normalize(ToFloat3(params.cameraForward));
     const float3 right = Normalize(ToFloat3(params.cameraRight));
     const float3 up = Normalize(ToFloat3(params.cameraUp));
+    const float baseScreenX = ((static_cast<float>(launchIndex.x) + 0.5f + params.settings.jitterOffsetX) / static_cast<float>(launchDimensions.x)) * 2.0f - 1.0f;
+    const float baseScreenY = ((static_cast<float>(launchIndex.y) + 0.5f + params.settings.jitterOffsetY) / static_cast<float>(launchDimensions.y)) * 2.0f - 1.0f;
 
     float3 accumulated = make_float3(0.0f, 0.0f, 0.0f);
+    bool wrotePrimary = false;
 
     for (int sampleIndex = 0; sampleIndex < params.settings.samplesPerPixel; ++sampleIndex) {
         const float jitterX = Random(seed);
         const float jitterY = Random(seed);
 
-        const float screenX = ((static_cast<float>(launchIndex.x) + jitterX) / static_cast<float>(launchDimensions.x)) * 2.0f - 1.0f;
-        const float screenY = ((static_cast<float>(launchIndex.y) + jitterY) / static_cast<float>(launchDimensions.y)) * 2.0f - 1.0f;
+        const float screenX = ((static_cast<float>(launchIndex.x) + params.settings.jitterOffsetX + jitterX) / static_cast<float>(launchDimensions.x)) * 2.0f - 1.0f;
+        const float screenY = ((static_cast<float>(launchIndex.y) + params.settings.jitterOffsetY + jitterY) / static_cast<float>(launchDimensions.y)) * 2.0f - 1.0f;
 
         float3 origin = eye;
         float3 direction = Normalize(
@@ -515,6 +559,31 @@ extern "C" __global__ void __raygen__rg() {
                 0,
                 payloadLow,
                 payloadHigh);
+
+            if (!wrotePrimary) {
+                wrotePrimary = true;
+                if (payload.hit == 0) {
+                    params.depth[pixelIndex] = 1.0f;
+                    params.worldPosition[pixelIndex] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+                    params.normals[pixelIndex] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+                    params.roughness[pixelIndex] = 1.0f;
+                    params.diffuseAlbedo[pixelIndex] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+                    params.specularAlbedo[pixelIndex] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+                } else {
+                    const float4 clip = MulPoint(params.currentViewProjection, payload.hitPosition);
+                    const float inverseW = fabsf(clip.w) > 1e-6f ? (1.0f / clip.w) : 0.0f;
+                    const float ndcZ = clip.z * inverseW;
+                    params.depth[pixelIndex] = fminf(fmaxf(ndcZ * 0.5f + 0.5f, 0.0f), 1.0f);
+                    params.worldPosition[pixelIndex] = make_float4(payload.hitPosition.x, payload.hitPosition.y, payload.hitPosition.z, 1.0f);
+                    const NativeMaterial* primaryMaterials = reinterpret_cast<const NativeMaterial*>(params.materials);
+                    const NativeMaterial primaryMaterial = primaryMaterials[payload.materialIndex];
+                    const float primaryReflectivity = fminf(fmaxf(primaryMaterial.reflectivity, 0.0f), 1.0f);
+                    params.normals[pixelIndex] = make_float4(payload.hitNormal.x, payload.hitNormal.y, payload.hitNormal.z, 0.0f);
+                    params.roughness[pixelIndex] = 1.0f - primaryReflectivity;
+                    params.diffuseAlbedo[pixelIndex] = make_float4(primaryMaterial.albedoR, primaryMaterial.albedoG, primaryMaterial.albedoB, 1.0f);
+                    params.specularAlbedo[pixelIndex] = make_float4(primaryReflectivity, primaryReflectivity, primaryReflectivity, 1.0f);
+                }
+            }
 
             if (payload.hit == 0) {
                 radiance = radiance + throughput * GetSkyColor(direction);
@@ -598,31 +667,56 @@ extern "C" __global__ void __raygen__rg() {
 }
 )";
 
+struct NgxCudaDlssCreateParams {
+    NVSDK_NGX_DLSS_Create_Params feature;
+};
+
+struct NgxCudaDlssEvalParams {
+    CUtexObject color = 0;
+    CUtexObject output = 0;
+    CUtexObject depth = 0;
+    CUtexObject motionVectors = 0;
+    float jitterOffsetX = 0.0f;
+    float jitterOffsetY = 0.0f;
+    unsigned int renderWidth = 0;
+    unsigned int renderHeight = 0;
+    int reset = 0;
+    float mvScaleX = 1.0f;
+    float mvScaleY = 1.0f;
+};
+
 class NativeRenderer {
 public:
-    explicit NativeRenderer(int width, int height) {
+    NativeRenderer(int renderWidth, int renderHeight, int outputWidth, int outputHeight) {
         InitializeOptix();
         CreateDenoiser();
         CreatePipeline();
         CreateSbt();
-        Resize(width, height);
+        InitializeDlss();
+        Resize(renderWidth, renderHeight, outputWidth, outputHeight);
     }
 
     ~NativeRenderer() {
         Destroy();
     }
 
-    void Resize(int width, int height) {
-        if (width <= 0 || height <= 0) {
+    void Resize(int renderWidth, int renderHeight, int outputWidth, int outputHeight) {
+        if (renderWidth <= 0 || renderHeight <= 0 || outputWidth <= 0 || outputHeight <= 0) {
             throw OptixError("Invalid render size.");
         }
 
-        if (width == width_ && height == height_ && beautyBuffer_ != 0) {
+        if (renderWidth == width_ &&
+            renderHeight == height_ &&
+            outputWidth == outputWidth_ &&
+            outputHeight == outputHeight_ &&
+            beautyBuffer_ != 0) {
             return;
         }
 
-        width_ = width;
-        height_ = height;
+        width_ = renderWidth;
+        height_ = renderHeight;
+        outputWidth_ = outputWidth;
+        outputHeight_ = outputHeight;
 
         if (beautyBuffer_ != 0) {
             CheckCuda(cudaFree(reinterpret_cast<void*>(beautyBuffer_)), "cudaFree(beautyBuffer)");
@@ -647,6 +741,9 @@ public:
         const auto accumulationSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
         CheckCuda(cudaMalloc(reinterpret_cast<void**>(&accumulationBuffer_), accumulationSize), "cudaMalloc(accumulationBuffer)");
         CheckCuda(cudaMemset(reinterpret_cast<void*>(accumulationBuffer_), 0, accumulationSize), "cudaMemset(accumulationBuffer)");
+
+        RecreateGuideBuffers();
+        RecreateDlssResources();
 
         SetupDenoiser();
     }
@@ -677,7 +774,7 @@ public:
         if (triangleMaterialIndexCount != static_cast<int>(triangleCount) || materialCount <= 0) {
             throw OptixError("Scene material buffers are invalid.");
         }
-        const auto requiredLength = width_ * height_ * 4;
+        const auto requiredLength = outputWidth_ * outputHeight_ * 4;
 
         if (outputLength < requiredLength) {
             throw OptixError("Output buffer is too small.");
@@ -688,6 +785,12 @@ public:
         LaunchParams params{};
         params.beauty = reinterpret_cast<float4*>(beautyBuffer_);
         params.accumulation = reinterpret_cast<float4*>(accumulationBuffer_);
+        params.depth = reinterpret_cast<float*>(depthBuffer_);
+        params.worldPosition = reinterpret_cast<float4*>(worldPositionBuffer_);
+        params.normals = reinterpret_cast<float4*>(normalGuideBuffer_);
+        params.roughness = reinterpret_cast<float*>(roughnessGuideBuffer_);
+        params.diffuseAlbedo = reinterpret_cast<float4*>(diffuseAlbedoGuideBuffer_);
+        params.specularAlbedo = reinterpret_cast<float4*>(specularAlbedoGuideBuffer_);
         params.materials = materialBuffer_;
         params.imageWidth = static_cast<unsigned int>(width_);
         params.imageHeight = static_cast<unsigned int>(height_);
@@ -700,6 +803,12 @@ public:
         params.settings = settings;
         params.handle = gasHandle_;
         params.frameIndex = frameIndex;
+        BuildViewProjectionMatrices(
+            camera,
+            params.currentViewProjection,
+            params.previousViewProjection,
+            params.worldToView,
+            params.viewToClip);
 
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(launchParamsBuffer_), &params, sizeof(params), cudaMemcpyHostToDevice), "cudaMemcpy(launchParams)");
 
@@ -719,13 +828,30 @@ public:
             ? DenoiseBeauty()
             : beautyBuffer_;
 
-        const auto beautySize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
-        hostBeautyBuffer_.resize(static_cast<size_t>(width_) * static_cast<size_t>(height_));
+        CUdeviceptr presentationSource = beautySource;
+        int presentationWidth = width_;
+        int presentationHeight = height_;
+
+        if (settings.enableDlss != 0 && TryEvaluateDlss(beautySource, settings, frameIndex)) {
+            presentationSource = dlssOutputBuffer_;
+            presentationWidth = outputWidth_;
+            presentationHeight = outputHeight_;
+        }
+
+        const auto presentationSize = static_cast<size_t>(presentationWidth) * static_cast<size_t>(presentationHeight) * sizeof(float4);
+        hostBeautyBuffer_.resize(static_cast<size_t>(presentationWidth) * static_cast<size_t>(presentationHeight));
         CheckCuda(
-            cudaMemcpy(hostBeautyBuffer_.data(), reinterpret_cast<void*>(beautySource), beautySize, cudaMemcpyDeviceToHost),
+            cudaMemcpy(hostBeautyBuffer_.data(), reinterpret_cast<void*>(presentationSource), presentationSize, cudaMemcpyDeviceToHost),
             "cudaMemcpy(hostBeautyBuffer)");
 
-        ToneMapToPixels(hostBeautyBuffer_.data(), static_cast<size_t>(width_) * static_cast<size_t>(height_), settings, outputPixels);
+        ToneMapToPixels(
+            hostBeautyBuffer_.data(),
+            presentationWidth,
+            presentationHeight,
+            outputWidth_,
+            outputHeight_,
+            settings,
+            outputPixels);
     }
 
 private:
@@ -826,6 +952,204 @@ private:
 
         CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize(denoiser)");
         return denoisedBeautyBuffer_;
+    }
+
+    void InitializeDlss() {
+        const auto appDataPath = std::filesystem::current_path() / ".ngx";
+        std::filesystem::create_directories(appDataPath);
+
+        const auto featurePath = std::filesystem::current_path() / "external" / "DLSS" / "lib" / "Linux_x86_64" / "rel";
+        featureSearchPath_ = featurePath.wstring();
+        appDataPath_ = appDataPath.wstring();
+        const wchar_t* searchPaths[] = {featureSearchPath_.c_str()};
+
+        NVSDK_NGX_FeatureCommonInfo featureInfo{};
+        featureInfo.PathListInfo.Path = searchPaths;
+        featureInfo.PathListInfo.Length = 1;
+
+        const auto result = NVSDK_NGX_CUDA_Init_with_ProjectID(
+            "a0f57b54-1daf-4934-90ae-c4035c19df04",
+            NVSDK_NGX_ENGINE_TYPE_CUSTOM,
+            "RayOptix",
+            appDataPath_.c_str(),
+            &featureInfo,
+            NVSDK_NGX_Version_API);
+
+        dlssAvailable_ = result == NVSDK_NGX_Result_Success;
+    }
+
+    void RecreateGuideBuffers() {
+        SafeCudaFree(depthBuffer_);
+        SafeCudaFree(worldPositionBuffer_);
+        SafeCudaFree(normalGuideBuffer_);
+        SafeCudaFree(roughnessGuideBuffer_);
+        SafeCudaFree(diffuseAlbedoGuideBuffer_);
+        SafeCudaFree(specularAlbedoGuideBuffer_);
+        const auto depthSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float);
+        const auto worldPositionSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
+        const auto normalSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
+        const auto roughnessSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float);
+        const auto albedoSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&depthBuffer_), depthSize), "cudaMalloc(depthBuffer)");
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&worldPositionBuffer_), worldPositionSize), "cudaMalloc(worldPositionBuffer)");
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&normalGuideBuffer_), normalSize), "cudaMalloc(normalGuideBuffer)");
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&roughnessGuideBuffer_), roughnessSize), "cudaMalloc(roughnessGuideBuffer)");
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&diffuseAlbedoGuideBuffer_), albedoSize), "cudaMalloc(diffuseAlbedoGuideBuffer)");
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&specularAlbedoGuideBuffer_), albedoSize), "cudaMalloc(specularAlbedoGuideBuffer)");
+    }
+
+    void RecreateDlssResources() {
+        SafeCudaFree(dlssMotionVectorsBuffer_);
+        SafeCudaFree(dlssOutputBuffer_);
+
+        const auto motionSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float2);
+        const auto outputSize = static_cast<size_t>(outputWidth_) * static_cast<size_t>(outputHeight_) * sizeof(float4);
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&dlssMotionVectorsBuffer_), motionSize), "cudaMalloc(dlssMotionVectorsBuffer)");
+        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&dlssOutputBuffer_), outputSize), "cudaMalloc(dlssOutputBuffer)");
+
+        if (dlssHandle_ != nullptr) {
+            NVSDK_NGX_CUDA_ReleaseFeature(dlssHandle_);
+            dlssHandle_ = nullptr;
+        }
+    }
+
+    bool TryEvaluateDlss(CUdeviceptr beautySource, const NativeRenderSettings& settings, unsigned int frameIndex) {
+        if (!dlssAvailable_) {
+            return false;
+        }
+
+        const auto worldPositionSize = static_cast<size_t>(width_) * static_cast<size_t>(height_);
+        hostWorldPositionBuffer_.resize(worldPositionSize);
+        hostMotionVectors_.resize(worldPositionSize);
+
+        CheckCuda(
+            cudaMemcpy(hostWorldPositionBuffer_.data(), reinterpret_cast<void*>(worldPositionBuffer_), worldPositionSize * sizeof(float4), cudaMemcpyDeviceToHost),
+            "cudaMemcpy(worldPositionBuffer)");
+
+        for (int y = 0; y < height_; ++y) {
+            for (int x = 0; x < width_; ++x) {
+                const auto& position = hostWorldPositionBuffer_[static_cast<size_t>(y) * static_cast<size_t>(width_) + static_cast<size_t>(x)];
+                float2 motion = make_float2(0.0f, 0.0f);
+
+                if (position.w > 0.0f) {
+                    const float currentPixelX = static_cast<float>(x) + 0.5f;
+                    const float currentPixelY = static_cast<float>(y) + 0.5f;
+                    const auto prev = TransformPoint(previousViewProjectionForDlss_, position);
+                    if (std::fabs(prev.w) > 1e-6f) {
+                        const float prevNdcX = prev.x / prev.w;
+                        const float prevNdcY = prev.y / prev.w;
+                        const float prevPixelX = (prevNdcX * 0.5f + 0.5f) * static_cast<float>(width_);
+                        const float prevPixelY = (0.5f - prevNdcY * 0.5f) * static_cast<float>(height_);
+                        motion = make_float2(prevPixelX - currentPixelX, prevPixelY - currentPixelY);
+                    }
+                }
+
+                hostMotionVectors_[static_cast<size_t>(y) * static_cast<size_t>(width_) + static_cast<size_t>(x)] = motion;
+            }
+        }
+
+        CheckCuda(
+            cudaMemcpy(reinterpret_cast<void*>(dlssMotionVectorsBuffer_), hostMotionVectors_.data(), worldPositionSize * sizeof(float2), cudaMemcpyHostToDevice),
+            "cudaMemcpy(dlssMotionVectors)");
+
+        if (dlssHandle_ == nullptr || dlssPerfQuality_ != settings.dlssPerfQuality) {
+            if (dlssHandle_ != nullptr) {
+                NVSDK_NGX_CUDA_ReleaseFeature(dlssHandle_);
+                dlssHandle_ = nullptr;
+            }
+
+            NVSDK_NGX_Parameter* createParams = nullptr;
+            if (NVSDK_NGX_FAILED(NVSDK_NGX_CUDA_AllocateParameters(&createParams))) {
+                return false;
+            }
+
+            NVSDK_NGX_CUDA_DLSSD_Create_Params createDlssdParams{};
+            createDlssdParams.Feature.InWidth = static_cast<unsigned int>(width_);
+            createDlssdParams.Feature.InHeight = static_cast<unsigned int>(height_);
+            createDlssdParams.Feature.InTargetWidth = static_cast<unsigned int>(outputWidth_);
+            createDlssdParams.Feature.InTargetHeight = static_cast<unsigned int>(outputHeight_);
+            createDlssdParams.Feature.InPerfQualityValue = static_cast<NVSDK_NGX_PerfQuality_Value>(settings.dlssPerfQuality);
+            createDlssdParams.Feature.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+            createDlssdParams.Feature.InEnableOutputSubrects = false;
+            createDlssdParams.Feature.InRoughnessMode = NVSDK_NGX_DLSS_Roughness_Mode_Unpacked;
+            createDlssdParams.Feature.InUseHWDepth = NVSDK_NGX_DLSS_Depth_Type_HW;
+            createDlssdParams.InCUContext = nullptr;
+            createDlssdParams.InCUStream = stream_;
+
+            const auto createResult = NGX_CUDA_CREATE_DLSSD_EXT(&dlssHandle_, createParams, &createDlssdParams);
+            NVSDK_NGX_CUDA_DestroyParameters(createParams);
+            if (NVSDK_NGX_FAILED(createResult)) {
+                dlssHandle_ = nullptr;
+                return false;
+            }
+
+            dlssPerfQuality_ = settings.dlssPerfQuality;
+        }
+
+        NVSDK_NGX_Parameter* evalParams = nullptr;
+        if (NVSDK_NGX_FAILED(NVSDK_NGX_CUDA_AllocateParameters(&evalParams))) {
+            return false;
+        }
+
+        NVSDK_NGX_CUDA_DLSSD_Eval_Params evalDlssdParams{};
+        evalDlssdParams.pInColor = reinterpret_cast<void*>(beautySource);
+        evalDlssdParams.pInOutput = reinterpret_cast<void*>(dlssOutputBuffer_);
+        evalDlssdParams.pInDepth = reinterpret_cast<void*>(depthBuffer_);
+        evalDlssdParams.pInMotionVectors = reinterpret_cast<void*>(dlssMotionVectorsBuffer_);
+        evalDlssdParams.pInNormals = reinterpret_cast<void*>(normalGuideBuffer_);
+        evalDlssdParams.pInRoughness = reinterpret_cast<void*>(roughnessGuideBuffer_);
+        evalDlssdParams.pInDiffuseAlbedo = reinterpret_cast<void*>(diffuseAlbedoGuideBuffer_);
+        evalDlssdParams.pInSpecularAlbedo = reinterpret_cast<void*>(specularAlbedoGuideBuffer_);
+        evalDlssdParams.InJitterOffsetX = settings.jitterOffsetX;
+        evalDlssdParams.InJitterOffsetY = settings.jitterOffsetY;
+        evalDlssdParams.InReset = frameIndex == 0 ? 1 : 0;
+        evalDlssdParams.InMVScaleX = 1.0f;
+        evalDlssdParams.InMVScaleY = 1.0f;
+        evalDlssdParams.InRenderSubrectDimensions = NVSDK_NGX_Dimensions{static_cast<unsigned int>(width_), static_cast<unsigned int>(height_)};
+        evalDlssdParams.pInWorldToViewMatrix = currentWorldToView_;
+        evalDlssdParams.pInViewToClipMatrix = currentViewToClip_;
+        evalDlssdParams.InPreExposure = 1.0f;
+        evalDlssdParams.InExposureScale = 1.0f;
+
+        const auto evaluateResult = NGX_CUDA_EVALUATE_DLSSD_EXT(dlssHandle_, evalParams, &evalDlssdParams);
+        NVSDK_NGX_CUDA_DestroyParameters(evalParams);
+        return !NVSDK_NGX_FAILED(evaluateResult);
+    }
+
+    void BuildViewProjectionMatrices(const NativeCamera& camera, float* current, float* previous, float* worldToView, float* viewToClip) {
+        const auto eye = Float3{camera.positionX, camera.positionY, camera.positionZ};
+        const auto target = Float3{camera.targetX, camera.targetY, camera.targetZ};
+        const auto forward = Normalize(Subtract(target, eye));
+        const auto right = Normalize(Cross(forward, Float3{0.0f, 1.0f, 0.0f}));
+        const auto up = Normalize(Cross(right, forward));
+
+        const auto aspect = static_cast<float>(width_) / static_cast<float>(height_);
+        const auto tanHalfFov = std::tan(camera.fovY * 0.5f * 3.14159265359f / 180.0f);
+        const auto nearPlane = 0.01f;
+        const auto farPlane = 1000.0f;
+
+        float view[16] = {
+            right.x, right.y, right.z, -(right.x * eye.x + right.y * eye.y + right.z * eye.z),
+            up.x, up.y, up.z, -(up.x * eye.x + up.y * eye.y + up.z * eye.z),
+            -forward.x, -forward.y, -forward.z, (forward.x * eye.x + forward.y * eye.y + forward.z * eye.z),
+            0.0f, 0.0f, 0.0f, 1.0f
+        };
+
+        float projection[16] = {
+            1.0f / (aspect * tanHalfFov), 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f / tanHalfFov, 0.0f, 0.0f,
+            0.0f, 0.0f, farPlane / (nearPlane - farPlane), (farPlane * nearPlane) / (nearPlane - farPlane),
+            0.0f, 0.0f, -1.0f, 0.0f
+        };
+
+        std::memcpy(worldToView, view, sizeof(float) * 16);
+        std::memcpy(viewToClip, projection, sizeof(float) * 16);
+        std::memcpy(currentWorldToView_, view, sizeof(currentWorldToView_));
+        std::memcpy(currentViewToClip_, projection, sizeof(currentViewToClip_));
+        MultiplyMatrices(projection, view, current);
+        std::memcpy(previous, previousViewProjection_, sizeof(previousViewProjection_));
+        std::memcpy(previousViewProjectionForDlss_, previousViewProjection_, sizeof(previousViewProjectionForDlss_));
+        std::memcpy(previousViewProjection_, current, sizeof(previousViewProjection_));
     }
 
     void CreatePipeline() {
@@ -1065,6 +1389,14 @@ private:
         SafeCudaFree(beautyBuffer_);
         SafeCudaFree(denoisedBeautyBuffer_);
         SafeCudaFree(accumulationBuffer_);
+        SafeCudaFree(depthBuffer_);
+        SafeCudaFree(worldPositionBuffer_);
+        SafeCudaFree(normalGuideBuffer_);
+        SafeCudaFree(roughnessGuideBuffer_);
+        SafeCudaFree(diffuseAlbedoGuideBuffer_);
+        SafeCudaFree(specularAlbedoGuideBuffer_);
+        SafeCudaFree(dlssMotionVectorsBuffer_);
+        SafeCudaFree(dlssOutputBuffer_);
         SafeCudaFree(launchParamsBuffer_);
         SafeCudaFree(raygenRecordBuffer_);
         SafeCudaFree(missRecordBuffer_);
@@ -1111,6 +1443,14 @@ private:
             optixDeviceContextDestroy(context_);
             context_ = nullptr;
         }
+        if (dlssHandle_ != nullptr) {
+            NVSDK_NGX_CUDA_ReleaseFeature(dlssHandle_);
+            dlssHandle_ = nullptr;
+        }
+        if (dlssAvailable_) {
+            NVSDK_NGX_CUDA_Shutdown();
+            dlssAvailable_ = false;
+        }
     }
 
     static Float3 Subtract(Float3 left, Float3 right) {
@@ -1129,6 +1469,26 @@ private:
         const auto length = std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
         const auto inverse = length > 1e-8f ? 1.0f / static_cast<float>(length) : 0.0f;
         return Float3{value.x * inverse, value.y * inverse, value.z * inverse};
+    }
+
+    static void MultiplyMatrices(const float* left, const float* right, float* out) {
+        for (int row = 0; row < 4; ++row) {
+            for (int column = 0; column < 4; ++column) {
+                out[row * 4 + column] =
+                    left[row * 4 + 0] * right[0 * 4 + column] +
+                    left[row * 4 + 1] * right[1 * 4 + column] +
+                    left[row * 4 + 2] * right[2 * 4 + column] +
+                    left[row * 4 + 3] * right[3 * 4 + column];
+            }
+        }
+    }
+
+    static float4 TransformPoint(const float* matrix, const float4& point) {
+        return make_float4(
+            matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3] * point.w,
+            matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7] * point.w,
+            matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11] * point.w,
+            matrix[12] * point.x + matrix[13] * point.y + matrix[14] * point.z + matrix[15] * point.w);
     }
 
     static void LogCallback(unsigned int level, const char* tag, const char* message, void*) {
@@ -1161,23 +1521,35 @@ private:
         }
     }
 
-    static void ToneMapToPixels(const float4* hdrPixels, size_t pixelCount, const NativeRenderSettings& settings, uint8_t* outputPixels) {
+    static void ToneMapToPixels(
+        const float4* hdrPixels,
+        int sourceWidth,
+        int sourceHeight,
+        int outputWidth,
+        int outputHeight,
+        const NativeRenderSettings& settings,
+        uint8_t* outputPixels) {
         const float exposure = std::max(settings.exposure, 0.001f);
         const float gamma = std::max(settings.gamma, 0.001f);
 
-        for (size_t index = 0; index < pixelCount; ++index) {
-            const size_t outputIndex = index * 4;
+        for (int y = 0; y < outputHeight; ++y) {
+            for (int x = 0; x < outputWidth; ++x) {
+                const int sourceX = std::clamp(x * sourceWidth / std::max(outputWidth, 1), 0, std::max(sourceWidth - 1, 0));
+                const int sourceY = std::clamp(y * sourceHeight / std::max(outputHeight, 1), 0, std::max(sourceHeight - 1, 0));
+                const auto& source = hdrPixels[sourceY * sourceWidth + sourceX];
+                const size_t outputIndex = static_cast<size_t>((y * outputWidth + x) * 4);
 
-            auto tonemapChannel = [exposure, gamma](float value) -> uint8_t {
-                const float exposed = std::clamp(value * exposure, 0.0f, 1.0f);
-                const float corrected = std::pow(exposed, 1.0f / gamma);
-                return static_cast<uint8_t>(std::clamp(corrected * 255.0f, 0.0f, 255.0f));
-            };
+                auto tonemapChannel = [exposure, gamma](float value) -> uint8_t {
+                    const float exposed = std::clamp(value * exposure, 0.0f, 1.0f);
+                    const float corrected = std::pow(exposed, 1.0f / gamma);
+                    return static_cast<uint8_t>(std::clamp(corrected * 255.0f, 0.0f, 255.0f));
+                };
 
-            outputPixels[outputIndex + 0] = tonemapChannel(hdrPixels[index].x);
-            outputPixels[outputIndex + 1] = tonemapChannel(hdrPixels[index].y);
-            outputPixels[outputIndex + 2] = tonemapChannel(hdrPixels[index].z);
-            outputPixels[outputIndex + 3] = 255;
+                outputPixels[outputIndex + 0] = tonemapChannel(source.x);
+                outputPixels[outputIndex + 1] = tonemapChannel(source.y);
+                outputPixels[outputIndex + 2] = tonemapChannel(source.z);
+                outputPixels[outputIndex + 3] = 255;
+            }
         }
     }
 
@@ -1193,10 +1565,20 @@ private:
 
     int width_ = 0;
     int height_ = 0;
+    int outputWidth_ = 0;
+    int outputHeight_ = 0;
 
     CUdeviceptr beautyBuffer_ = 0;
     CUdeviceptr denoisedBeautyBuffer_ = 0;
     CUdeviceptr accumulationBuffer_ = 0;
+    CUdeviceptr depthBuffer_ = 0;
+    CUdeviceptr worldPositionBuffer_ = 0;
+    CUdeviceptr normalGuideBuffer_ = 0;
+    CUdeviceptr roughnessGuideBuffer_ = 0;
+    CUdeviceptr diffuseAlbedoGuideBuffer_ = 0;
+    CUdeviceptr specularAlbedoGuideBuffer_ = 0;
+    CUdeviceptr dlssMotionVectorsBuffer_ = 0;
+    CUdeviceptr dlssOutputBuffer_ = 0;
     CUdeviceptr launchParamsBuffer_ = 0;
     CUdeviceptr raygenRecordBuffer_ = 0;
     CUdeviceptr missRecordBuffer_ = 0;
@@ -1225,6 +1607,37 @@ private:
     OptixDenoiserSizes denoiserSizes_{};
     OptixTraversableHandle gasHandle_ = 0;
     std::vector<float4> hostBeautyBuffer_;
+    std::vector<float4> hostWorldPositionBuffer_;
+    std::vector<float2> hostMotionVectors_;
+    bool dlssAvailable_ = false;
+    NVSDK_NGX_Handle* dlssHandle_ = nullptr;
+    int dlssPerfQuality_ = -1;
+    std::wstring featureSearchPath_;
+    std::wstring appDataPath_;
+    float previousViewProjection_[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    float previousViewProjectionForDlss_[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    float currentWorldToView_[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    float currentViewToClip_[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
 };
 
 void CopyError(char* error, int errorCapacity, const std::string& message) {
@@ -1237,13 +1650,13 @@ void CopyError(char* error, int errorCapacity, const std::string& message) {
 
 } // namespace
 
-extern "C" bool roptixCreate(int width, int height, void** handle, char* error, int errorCapacity) {
+extern "C" bool roptixCreate(int renderWidth, int renderHeight, int outputWidth, int outputHeight, void** handle, char* error, int errorCapacity) {
     try {
         if (handle == nullptr) {
             throw OptixError("Handle pointer is null.");
         }
 
-        auto renderer = std::make_unique<NativeRenderer>(width, height);
+        auto renderer = std::make_unique<NativeRenderer>(renderWidth, renderHeight, outputWidth, outputHeight);
         *handle = renderer.release();
         CopyError(error, errorCapacity, "");
         return true;
@@ -1257,13 +1670,13 @@ extern "C" void roptixDestroy(void* handle) {
     delete static_cast<NativeRenderer*>(handle);
 }
 
-extern "C" bool roptixResize(void* handle, int width, int height, char* error, int errorCapacity) {
+extern "C" bool roptixResize(void* handle, int renderWidth, int renderHeight, int outputWidth, int outputHeight, char* error, int errorCapacity) {
     try {
         if (handle == nullptr) {
             throw OptixError("Renderer handle is null.");
         }
 
-        static_cast<NativeRenderer*>(handle)->Resize(width, height);
+        static_cast<NativeRenderer*>(handle)->Resize(renderWidth, renderHeight, outputWidth, outputHeight);
         CopyError(error, errorCapacity, "");
         return true;
     } catch (const std::exception& exception) {
@@ -1274,8 +1687,10 @@ extern "C" bool roptixResize(void* handle, int width, int height, char* error, i
 
 extern "C" bool roptixRender(
     void* handle,
-    int width,
-    int height,
+    int renderWidth,
+    int renderHeight,
+    int outputWidth,
+    int outputHeight,
     NativeCamera camera,
     NativeRenderSettings settings,
     const float* vertices,
@@ -1299,7 +1714,7 @@ extern "C" bool roptixRender(
         }
 
         auto* renderer = static_cast<NativeRenderer*>(handle);
-        renderer->Resize(width, height);
+        renderer->Resize(renderWidth, renderHeight, outputWidth, outputHeight);
         renderer->Render(
             camera,
             settings,
