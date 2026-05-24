@@ -24,10 +24,10 @@ internal class MeshData(int vertexCount, int triangleCount, float[] vertices, fl
         Normals.CopyTo(mesh.NormalsAs<float>());
         TexCoords.CopyTo(mesh.TexCoordsAs<float>());
         Indices.CopyTo(mesh.IndicesAs<ushort>());
-
-        RaylibMesh = mesh;
         
         Raylib_cs.Raylib.UploadMesh(ref mesh, false);
+        
+        RaylibMesh = mesh;
     }
 
     protected override void UnloadRaylib() {
