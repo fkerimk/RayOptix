@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -23,7 +24,12 @@
 #include <thread>
 #include <vector>
 
-#if defined(__linux__)
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <GL/gl.h>
+#elif defined(__linux__)
 #include <GL/gl.h>
 #endif
 
@@ -102,6 +108,28 @@ class OptixError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
+
+#if defined(_WIN32)
+void EnsureWindowsOptixRuntimeAvailable() {
+    if (LoadLibraryA("nvcuda.dll") == nullptr) {
+        throw OptixError("nvcuda.dll could not be loaded. Install or enable the NVIDIA Windows driver.");
+    }
+
+    if (LoadLibraryA("nvoptix.dll") == nullptr) {
+        throw OptixError("nvoptix.dll could not be loaded. Install an NVIDIA driver with OptiX runtime support.");
+    }
+}
+
+void AppendBootstrapLog(const char* message) {
+    OutputDebugStringA(message);
+    OutputDebugStringA("\n");
+
+    if (FILE* file = std::fopen("rayoptix_native_boot.txt", "a")) {
+        std::fprintf(file, "%s\n", message);
+        std::fclose(file);
+    }
+}
+#endif
 
 inline void CheckCuda(cudaError_t result, const char* call) {
     if (result != cudaSuccess) {
@@ -314,22 +342,48 @@ public:
 
 private:
     void InitializeOptix() {
+#if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: preflight");
+        EnsureWindowsOptixRuntimeAvailable();
+        AppendBootstrapLog("[OptiX] bootstrap: preflight-ok");
+#endif
         int deviceCount = 0;
+        #if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: cudaGetDeviceCount");
+        #endif
         CheckCuda(cudaGetDeviceCount(&deviceCount), "cudaGetDeviceCount");
         if (deviceCount <= 0) {
             throw OptixError("No CUDA-capable NVIDIA device is available for OptiX.");
         }
 
+        #if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: cudaSetDevice");
+        #endif
         CheckCuda(cudaSetDevice(0), "cudaSetDevice");
+        #if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: cudaFree(init)");
+        #endif
         CheckCuda(cudaFree(nullptr), "cudaFree(init)");
+        #if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: optixInit");
+        #endif
         CheckOptix(optixInit(), "optixInit");
 
         OptixDeviceContextOptions options{};
         options.logCallbackLevel = 4;
         options.logCallbackFunction = &LogCallback;
 
+        #if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: optixDeviceContextCreate");
+        #endif
         CheckOptix(optixDeviceContextCreate(nullptr, &options, &context_), "optixDeviceContextCreate");
+        #if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: cudaStreamCreate");
+        #endif
         CheckCuda(cudaStreamCreate(&stream_), "cudaStreamCreate");
+        #if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: init-ok");
+        #endif
     }
 
     void CreateDenoiser() {

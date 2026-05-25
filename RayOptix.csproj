@@ -8,21 +8,79 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <NativeHostIsWindows Condition="'$(OS)' == 'Windows_NT'">true</NativeHostIsWindows>
+    <NativeHostIsWindows Condition="'$(NativeHostIsWindows)' == ''">false</NativeHostIsWindows>
+    <SkipNativeOptixBuild Condition="'$(SkipNativeOptixBuild)' == ''">false</SkipNativeOptixBuild>
+
+    <NativeTargetIsWindows Condition="'$(RuntimeIdentifier)' != '' and $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))">true</NativeTargetIsWindows>
+    <NativeTargetIsLinux Condition="'$(RuntimeIdentifier)' != '' and $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('linux'))">true</NativeTargetIsLinux>
+
+    <NativeTargetIsWindows Condition="'$(RuntimeIdentifier)' == '' and '$(NativeHostIsWindows)' == 'true'">true</NativeTargetIsWindows>
+    <NativeTargetIsLinux Condition="'$(RuntimeIdentifier)' == '' and '$(NativeHostIsWindows)' != 'true'">true</NativeTargetIsLinux>
+
+    <NativePlatformName Condition="'$(NativeTargetIsWindows)' == 'true'">windows-x64</NativePlatformName>
+    <NativePlatformName Condition="'$(NativeTargetIsLinux)' == 'true'">linux-x64</NativePlatformName>
+
+    <NativeLibraryFileName Condition="'$(NativeTargetIsWindows)' == 'true'">RayOptixNative.dll</NativeLibraryFileName>
+    <NativeLibraryFileName Condition="'$(NativeTargetIsLinux)' == 'true'">libRayOptixNative.so</NativeLibraryFileName>
+
+    <NativeBuildDirectory>native/build/$(Configuration)/$(NativePlatformName)</NativeBuildDirectory>
+    <NativeLibraryPath>$(NativeBuildDirectory)/$(NativeLibraryFileName)</NativeLibraryPath>
+    <NativeCMakeBuildType Condition="'$(Configuration)' == 'Debug'">Debug</NativeCMakeBuildType>
+    <NativeCMakeBuildType Condition="'$(NativeCMakeBuildType)' == ''">Release</NativeCMakeBuildType>
+    <NativeRuntimeDependencyPaths Condition="'$(NativeRuntimeDependencyPaths)' == ''">$(ROPTIX_NATIVE_RUNTIME_DEPS)</NativeRuntimeDependencyPaths>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Raylib-cs" Version="7.0.2" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="native/build/libRayOptixNative.so">
-      <Link>libRayOptixNative.so</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </None>
-  </ItemGroup>
+  <Target Name="ValidateNativeOptixPlatform" BeforeTargets="BuildNativeOptix" Condition="'$(SkipNativeOptixBuild)' != 'true'">
+    <Error Condition="'$(NativeTargetIsWindows)' == 'true' and '$(NativeHostIsWindows)' != 'true'"
+           Text="Building or publishing OptiX for win-x64 requires running this project on Windows with the Windows CUDA/OptiX toolchain installed." />
+    <Error Condition="'$(NativeTargetIsLinux)' == 'true' and '$(NativeHostIsWindows)' == 'true'"
+           Text="Building or publishing OptiX for linux-x64 requires running this project on Linux." />
+    <Error Condition="'$(NativePlatformName)' == ''"
+           Text="Unsupported RuntimeIdentifier '$(RuntimeIdentifier)' for the native OptiX build." />
+  </Target>
 
-  <Target Name="BuildNativeOptix" BeforeTargets="BeforeBuild">
-    <Exec Command="cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release" />
-    <Exec Command="cmake --build native/build -j4" />
+  <Target Name="BuildNativeOptix" BeforeTargets="BeforeBuild" Condition="'$(SkipNativeOptixBuild)' != 'true'">
+    <MakeDir Directories="$(NativeBuildDirectory)" />
+    <Exec Command="cmake -S native -B &quot;$(NativeBuildDirectory)&quot; -DCMAKE_BUILD_TYPE=$(NativeCMakeBuildType)" />
+    <Exec Command="cmake --build &quot;$(NativeBuildDirectory)&quot; --config $(Configuration) -j4" />
+  </Target>
+
+  <Target Name="CopyNativeOptixToBuild" AfterTargets="Build" Condition="Exists('$(NativeLibraryPath)')">
+    <Copy SourceFiles="$(NativeLibraryPath)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyNativeOptixRuntimeDependenciesToBuild" AfterTargets="Build" Condition="'$(NativeRuntimeDependencyPaths)' != ''">
+    <ItemGroup>
+      <NativeRuntimeDependencies Include="$(NativeRuntimeDependencyPaths)" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeRuntimeDependencies)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(NativeRuntimeDependencies)' != ''" />
+  </Target>
+
+  <Target Name="CopyNativeOptixToPublish" AfterTargets="Publish" Condition="Exists('$(NativeLibraryPath)')">
+    <Copy SourceFiles="$(NativeLibraryPath)"
+          DestinationFolder="$(PublishDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyNativeOptixRuntimeDependenciesToPublish" AfterTargets="Publish" Condition="'$(NativeRuntimeDependencyPaths)' != ''">
+    <ItemGroup>
+      <NativeRuntimeDependencies Include="$(NativeRuntimeDependencyPaths)" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeRuntimeDependencies)"
+          DestinationFolder="$(PublishDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(NativeRuntimeDependencies)' != ''" />
   </Target>
 
 </Project>
