@@ -10,6 +10,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_library(RayOptixNative SHARED
     src/interop.cpp
+    src/native_exports.cpp
 )
 
 target_include_directories(RayOptixNative PRIVATE
