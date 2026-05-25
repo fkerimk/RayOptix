@@ -110,13 +110,63 @@ public:
 };
 
 #if defined(_WIN32)
+std::string GetBootstrapLogPath() {
+    char modulePath[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+        return "rayoptix_native_boot.txt";
+    }
+
+    std::string path(modulePath, modulePath + length);
+    const size_t slash = path.find_last_of("\\/");
+    if (slash == std::string::npos) {
+        return "rayoptix_native_boot.txt";
+    }
+
+    path.resize(slash + 1);
+    path += "rayoptix_native_boot.txt";
+    return path;
+}
+
+std::string DescribeLastWindowsError(const char* libraryName) {
+    const DWORD errorCode = GetLastError();
+    char* messageBuffer = nullptr;
+    const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+    const DWORD length = FormatMessageA(
+        flags,
+        nullptr,
+        errorCode,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        reinterpret_cast<LPSTR>(&messageBuffer),
+        0,
+        nullptr);
+
+    std::string message;
+    if (length != 0 && messageBuffer != nullptr) {
+        message.assign(messageBuffer, messageBuffer + length);
+        while (!message.empty() && (message.back() == '\r' || message.back() == '\n' || message.back() == ' ' || message.back() == '\t')) {
+            message.pop_back();
+        }
+    } else {
+        message = "unknown Windows loader error";
+    }
+
+    if (messageBuffer != nullptr) {
+        LocalFree(messageBuffer);
+    }
+
+    std::ostringstream stream;
+    stream << libraryName << " could not be loaded (Win32 error " << static_cast<unsigned long>(errorCode) << ": " << message << ")";
+    return stream.str();
+}
+
 void EnsureWindowsOptixRuntimeAvailable() {
     if (LoadLibraryA("nvcuda.dll") == nullptr) {
-        throw OptixError("nvcuda.dll could not be loaded. Install or enable the NVIDIA Windows driver.");
+        throw OptixError(DescribeLastWindowsError("nvcuda.dll"));
     }
 
     if (LoadLibraryA("nvoptix.dll") == nullptr) {
-        throw OptixError("nvoptix.dll could not be loaded. Install an NVIDIA driver with OptiX runtime support.");
+        throw OptixError(DescribeLastWindowsError("nvoptix.dll"));
     }
 }
 
@@ -124,7 +174,8 @@ void AppendBootstrapLog(const char* message) {
     OutputDebugStringA(message);
     OutputDebugStringA("\n");
 
-    if (FILE* file = std::fopen("rayoptix_native_boot.txt", "a")) {
+    const std::string logPath = GetBootstrapLogPath();
+    if (FILE* file = std::fopen(logPath.c_str(), "a")) {
         std::fprintf(file, "%s\n", message);
         std::fclose(file);
     }
