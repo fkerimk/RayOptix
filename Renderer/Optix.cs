@@ -62,7 +62,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     private IntPtr nativeHandle;
     private Texture2D texture;
-    private byte[]? pixels;
     private int renderWidth;
     private int renderHeight;
     private int outputWidth;
@@ -87,8 +86,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         var image = GenImageColor(outputWidth, outputHeight, Color.Black);
         texture = LoadTextureFromImage(image);
         UnloadImage(image);
-
-        pixels = new byte[outputWidth * outputHeight * 4];
     }
 
     public override void Begin() {
@@ -107,11 +104,11 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
         EnsureTextureSize();
 
-        if (initError is not null || nativeHandle == IntPtr.Zero || pixels is null) {
+        if (initError is not null || nativeHandle == IntPtr.Zero) {
             EnsureNativeInitialized();
         }
 
-        if (initError is not null || nativeHandle == IntPtr.Zero || pixels is null) {
+        if (initError is not null || nativeHandle == IntPtr.Zero) {
 
             DrawUnavailable();
             return;
@@ -150,8 +147,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
                 scene.Materials,
                 scene.Materials.Length,
                 frameIndex++,
-                pixels,
-                pixels.Length,
+                texture.Id,
                 ref lastFrameStats,
                 error,
                 error.Capacity)) {
@@ -166,17 +162,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         }
         interopStopwatch.Stop();
         lastInteropMs = interopStopwatch.Elapsed.TotalMilliseconds;
-
-        var textureUploadStopwatch = Stopwatch.StartNew();
-        unsafe {
-
-            fixed (byte* pixelPtr = pixels) {
-
-                UpdateTexture(texture, pixelPtr);
-            }
-        }
-        textureUploadStopwatch.Stop();
-        lastTextureUploadMs = textureUploadStopwatch.Elapsed.TotalMilliseconds;
+        lastTextureUploadMs = 0.0;
 
         DrawTexturePro(
             texture,
@@ -193,12 +179,16 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
         if (nativeHandle != IntPtr.Zero) {
 
+            if (texture.Id != 0) {
+
+                OptixNative.ReleaseOutputTexture(nativeHandle, texture.Id);
+            }
+
             OptixNative.Destroy(nativeHandle);
             nativeHandle = IntPtr.Zero;
         }
 
         if (texture.Id != 0) {
-
             UnloadTexture(texture);
         }
     }
@@ -218,6 +208,11 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
         if (texture.Id != 0) {
 
+            if (nativeHandle != IntPtr.Zero) {
+
+                OptixNative.ReleaseOutputTexture(nativeHandle, texture.Id);
+            }
+
             UnloadTexture(texture);
         }
 
@@ -225,7 +220,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         renderHeight = newRenderHeight;
         outputWidth = newOutputWidth;
         outputHeight = newOutputHeight;
-        pixels = new byte[outputWidth * outputHeight * 4];
 
         var image = GenImageColor(outputWidth, outputHeight, Color.Black);
         texture = LoadTextureFromImage(image);
@@ -345,8 +339,8 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         DrawText($"Interop: {lastInteropMs:0.0} ms", 10, 176, 20, Color.Maroon);
         DrawText($"Native Total: {lastFrameStats.TotalMs:0.0} ms", 10, 200, 20, Color.Maroon);
         DrawText($"Upload/Launch: {lastFrameStats.UploadSceneMs:0.0} / {lastFrameStats.LaunchMs:0.0} ms", 10, 224, 20, Color.Maroon);
-        DrawText($"Denoise/Readback: {lastFrameStats.DenoiseMs:0.0} / {lastFrameStats.ReadbackMs:0.0} ms", 10, 248, 20, Color.Maroon);
-        DrawText($"ToneMap/Texture: {lastFrameStats.ToneMapMs:0.0} / {lastTextureUploadMs:0.0} ms", 10, 272, 20, Color.Maroon);
+        DrawText($"Denoise/Present: {lastFrameStats.DenoiseMs:0.0} / {lastFrameStats.ReadbackMs:0.0} ms", 10, 248, 20, Color.Maroon);
+        DrawText($"ToneMap/CSharp: {lastFrameStats.ToneMapMs:0.0} / {lastTextureUploadMs:0.0} ms", 10, 272, 20, Color.Maroon);
     }
 
     private void LogErrorOnce(string? error) {
@@ -516,6 +510,9 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         [DllImport(LibraryName, EntryPoint = "roptixDestroy", CallingConvention = CallingConvention.Cdecl)]
         public static extern void Destroy(IntPtr handle);
 
+        [DllImport(LibraryName, EntryPoint = "roptixReleaseOutputTexture", CallingConvention = CallingConvention.Cdecl)]
+        public static extern void ReleaseOutputTexture(IntPtr handle, uint textureId);
+
         [DllImport(LibraryName, EntryPoint = "roptixResize", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         [return: MarshalAs(UnmanagedType.I1)]
         public static extern bool Resize(IntPtr handle, int renderWidth, int renderHeight, int outputWidth, int outputHeight, StringBuilder error, int errorCapacity);
@@ -541,8 +538,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             OptixMaterial[] materials,
             int materialCount,
             uint frameIndex,
-            byte[] outputPixels,
-            int outputLength,
+            uint outputTextureId,
             ref OptixFrameStats stats,
             StringBuilder error,
             int errorCapacity);

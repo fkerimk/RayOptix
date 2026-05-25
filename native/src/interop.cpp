@@ -1,4 +1,5 @@
 #include <cuda.h>
+#include <cuda_gl_interop.h>
 #include <cuda_runtime.h>
 #include <nvrtc.h>
 #include <optix.h>
@@ -21,6 +22,10 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+
+#if defined(__linux__)
+#include <GL/gl.h>
+#endif
 
 namespace {
 
@@ -170,7 +175,28 @@ inline void CheckNvrtc(nvrtcResult result, const char* call) {
     }
 }
 
+inline void CheckCudaDriver(CUresult result, const char* call) {
+    if (result != CUDA_SUCCESS) {
+        const char* errorName = nullptr;
+        const char* errorString = nullptr;
+        cuGetErrorName(result, &errorName);
+        cuGetErrorString(result, &errorString);
+        throw OptixError(std::string(call) + " failed: " +
+            (errorName != nullptr ? errorName : "unknown") + " / " +
+            (errorString != nullptr ? errorString : "unknown"));
+    }
+}
+
+inline void IgnoreCuda(cudaError_t result) {
+    (void)result;
+}
+
+inline void IgnoreCudaDriver(CUresult result) {
+    (void)result;
+}
+
 const char* kOptixDeviceSource = R"(
+#include <cuda_runtime.h>
 #include <optix.h>
 #include <optix_device.h>
 #include <vector_types.h>
@@ -404,6 +430,12 @@ static __forceinline__ __device__ float3 SampleHemisphere(float3 normal, unsigne
 
 static __forceinline__ __device__ float3 Reflect(float3 incident, float3 normal) {
     return incident - normal * (2.0f * Dot(incident, normal));
+}
+
+static __forceinline__ __device__ unsigned char ToneMapChannel(float value, float exposure, float inverseGamma) {
+    const float exposed = fminf(fmaxf(value * exposure, 0.0f), 1.0f);
+    const float corrected = powf(exposed, inverseGamma);
+    return static_cast<unsigned char>(fminf(fmaxf(corrected * 255.0f, 0.0f), 255.0f));
 }
 
 static __forceinline__ __device__ float4 MulPoint(const float* matrix, float3 point) {
@@ -655,6 +687,76 @@ extern "C" __global__ void __raygen__rg() {
 
     params.beauty[pixelIndex] = make_float4(sampleRadiance.x, sampleRadiance.y, sampleRadiance.z, 1.0f);
 }
+
+extern "C" __global__ void ToneMapToSurface(
+    const float4* hdrPixels,
+    cudaSurfaceObject_t outputSurface,
+    int sourceWidth,
+    int sourceHeight,
+    int outputWidth,
+    int outputHeight,
+    float exposure,
+    float inverseGamma) {
+    const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
+
+    if (x >= outputWidth || y >= outputHeight) {
+        return;
+    }
+
+    const int sourceX = min(max(x * sourceWidth / max(outputWidth, 1), 0), max(sourceWidth - 1, 0));
+    const int sourceY = min(max(y * sourceHeight / max(outputHeight, 1), 0), max(sourceHeight - 1, 0));
+    const float4 source = hdrPixels[sourceY * sourceWidth + sourceX];
+
+    const uchar4 outPixel = make_uchar4(
+        ToneMapChannel(source.x, exposure, inverseGamma),
+        ToneMapChannel(source.y, exposure, inverseGamma),
+        ToneMapChannel(source.z, exposure, inverseGamma),
+        255);
+
+    surf2Dwrite(outPixel, outputSurface, x * static_cast<int>(sizeof(uchar4)), y);
+}
+)";
+
+const char* kPresentDeviceSource = R"(
+#include <cuda_runtime.h>
+
+static __forceinline__ __device__ unsigned char ToneMapChannel(float value, float exposure, float inverseGamma) {
+    const float exposed = fminf(fmaxf(value * exposure, 0.0f), 1.0f);
+    const float corrected = powf(exposed, inverseGamma);
+    return static_cast<unsigned char>(fminf(fmaxf(corrected * 255.0f, 0.0f), 255.0f));
+}
+
+extern "C" __global__ void ToneMapToSurface(
+    const float4* hdrPixels,
+    cudaSurfaceObject_t outputSurface,
+    unsigned int sourceWidth,
+    unsigned int sourceHeight,
+    unsigned int outputWidth,
+    unsigned int outputHeight,
+    float exposure,
+    float inverseGamma) {
+    const unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= outputWidth || y >= outputHeight) {
+        return;
+    }
+
+    const unsigned int safeOutputWidth = max(outputWidth, 1u);
+    const unsigned int safeOutputHeight = max(outputHeight, 1u);
+    const unsigned int sourceX = min(x * sourceWidth / safeOutputWidth, max(sourceWidth, 1u) - 1u);
+    const unsigned int sourceY = min(y * sourceHeight / safeOutputHeight, max(sourceHeight, 1u) - 1u);
+    const float4 source = hdrPixels[sourceY * sourceWidth + sourceX];
+
+    const uchar4 outPixel = make_uchar4(
+        ToneMapChannel(source.x, exposure, inverseGamma),
+        ToneMapChannel(source.y, exposure, inverseGamma),
+        ToneMapChannel(source.z, exposure, inverseGamma),
+        255);
+
+    surf2Dwrite(outPixel, outputSurface, static_cast<int>(x * sizeof(uchar4)), static_cast<int>(y));
+}
 )";
 
 class NativeRenderer {
@@ -669,6 +771,10 @@ public:
 
     ~NativeRenderer() {
         Destroy();
+    }
+
+    void ReleaseOutputTextureForInterop(unsigned int textureId) {
+        ReleaseOutputTexture(textureId);
     }
 
     void Resize(int renderWidth, int renderHeight, int outputWidth, int outputHeight) {
@@ -732,8 +838,7 @@ public:
         const NativeMaterial* materials,
         int materialCount,
         unsigned int frameIndex,
-        uint8_t* outputPixels,
-        int outputLength,
+        unsigned int outputTextureId,
         NativeFrameStats* stats) {
         const auto totalStart = std::chrono::steady_clock::now();
         NativeFrameStats localStats{};
@@ -747,11 +852,11 @@ public:
         if (triangleMaterialIndexCount != static_cast<int>(triangleCount) || materialCount <= 0) {
             throw OptixError("Scene material buffers are invalid.");
         }
-        const auto requiredLength = outputWidth_ * outputHeight_ * 4;
-
-        if (outputLength < requiredLength) {
-            throw OptixError("Output buffer is too small.");
+        if (outputTextureId == 0) {
+            throw OptixError("Output texture is invalid.");
         }
+
+        EnsureOutputTextureInterop(outputTextureId);
 
         const auto uploadStart = std::chrono::steady_clock::now();
         UploadScene(vertices, normals, vertexCount, indices, triangleCount, triangleMaterialIndices, materials, static_cast<unsigned int>(materialCount));
@@ -801,24 +906,11 @@ public:
             ? DenoiseBeauty()
             : beautyBuffer_;
         localStats.denoiseMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - denoiseStart).count();
-        const auto presentationSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
-        hostBeautyBuffer_.resize(static_cast<size_t>(width_) * static_cast<size_t>(height_));
-        const auto readbackStart = std::chrono::steady_clock::now();
-        CheckCuda(
-            cudaMemcpy(hostBeautyBuffer_.data(), reinterpret_cast<void*>(presentationSource), presentationSize, cudaMemcpyDeviceToHost),
-            "cudaMemcpy(hostBeautyBuffer)");
-        localStats.readbackMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - readbackStart).count();
 
         const auto toneMapStart = std::chrono::steady_clock::now();
-        ToneMapToPixels(
-            hostBeautyBuffer_.data(),
-            width_,
-            height_,
-            outputWidth_,
-            outputHeight_,
-            settings,
-            outputPixels);
+        PresentToOutputTexture(presentationSource, settings);
         localStats.toneMapMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - toneMapStart).count();
+        localStats.readbackMs = 0.0;
         localStats.totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - totalStart).count();
 
         if (stats != nullptr) {
@@ -926,6 +1018,104 @@ private:
         return denoisedBeautyBuffer_;
     }
 
+    void EnsureOutputTextureInterop(unsigned int textureId) {
+        if (textureInteropResource_ != nullptr && registeredOutputTextureId_ == textureId) {
+            return;
+        }
+
+        ReleaseOutputTexture();
+
+        CheckCuda(
+            cudaGraphicsGLRegisterImage(
+                &textureInteropResource_,
+                textureId,
+                GL_TEXTURE_2D,
+                cudaGraphicsRegisterFlagsSurfaceLoadStore),
+            "cudaGraphicsGLRegisterImage");
+
+        registeredOutputTextureId_ = textureId;
+    }
+
+    void ReleaseOutputTexture() {
+        if (textureInteropResource_ == nullptr) {
+            registeredOutputTextureId_ = 0;
+            return;
+        }
+
+        IgnoreCuda(cudaGraphicsUnregisterResource(textureInteropResource_));
+        textureInteropResource_ = nullptr;
+        registeredOutputTextureId_ = 0;
+    }
+
+    void ReleaseOutputTexture(unsigned int textureId) {
+        if (textureId != 0 && textureId != registeredOutputTextureId_) {
+            return;
+        }
+
+        ReleaseOutputTexture();
+    }
+
+    void PresentToOutputTexture(CUdeviceptr hdrSource, const NativeRenderSettings& settings) {
+        if (textureInteropResource_ == nullptr) {
+            throw OptixError("Output texture interop is not initialized.");
+        }
+
+        CheckCuda(cudaGraphicsMapResources(1, &textureInteropResource_, stream_), "cudaGraphicsMapResources");
+
+        cudaArray_t outputArray = nullptr;
+        CheckCuda(cudaGraphicsSubResourceGetMappedArray(&outputArray, textureInteropResource_, 0, 0), "cudaGraphicsSubResourceGetMappedArray");
+
+        cudaResourceDesc resourceDesc{};
+        resourceDesc.resType = cudaResourceTypeArray;
+        resourceDesc.res.array.array = outputArray;
+
+        cudaSurfaceObject_t surfaceObject = 0;
+        CheckCuda(cudaCreateSurfaceObject(&surfaceObject, &resourceDesc), "cudaCreateSurfaceObject");
+
+        float inverseGamma = 1.0f / std::max(settings.gamma, 0.001f);
+        float exposure = std::max(settings.exposure, 0.001f);
+        unsigned int sourceWidth = static_cast<unsigned int>(width_);
+        unsigned int sourceHeight = static_cast<unsigned int>(height_);
+        unsigned int outputWidth = static_cast<unsigned int>(outputWidth_);
+        unsigned int outputHeight = static_cast<unsigned int>(outputHeight_);
+        unsigned long long surfaceHandle = static_cast<unsigned long long>(surfaceObject);
+
+        void* kernelArgs[] = {
+            &hdrSource,
+            &surfaceHandle,
+            &sourceWidth,
+            &sourceHeight,
+            &outputWidth,
+            &outputHeight,
+            &exposure,
+            &inverseGamma
+        };
+
+        constexpr unsigned int blockSizeX = 16;
+        constexpr unsigned int blockSizeY = 16;
+        const unsigned int gridSizeX = (outputWidth + blockSizeX - 1) / blockSizeX;
+        const unsigned int gridSizeY = (outputHeight + blockSizeY - 1) / blockSizeY;
+
+        CheckCudaDriver(
+            cuLaunchKernel(
+                toneMapKernel_,
+                gridSizeX,
+                gridSizeY,
+                1,
+                blockSizeX,
+                blockSizeY,
+                1,
+                0,
+                stream_,
+                kernelArgs,
+                nullptr),
+            "cuLaunchKernel(ToneMapToSurface)");
+
+        CheckCuda(cudaDestroySurfaceObject(surfaceObject), "cudaDestroySurfaceObject");
+        CheckCuda(cudaGraphicsUnmapResources(1, &textureInteropResource_, stream_), "cudaGraphicsUnmapResources");
+        CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize(present)");
+    }
+
     void RecreateGuideBuffers() {
         SafeCudaFree(depthBuffer_);
         SafeCudaFree(worldPositionBuffer_);
@@ -976,7 +1166,8 @@ private:
     }
 
     void CreatePipeline() {
-        const auto ptx = CompilePtx();
+        const auto ptx = CompileOptixPtx();
+        CreateCudaModule(CompilePresentPtx());
 
         OptixModuleCompileOptions moduleCompileOptions{};
         moduleCompileOptions.maxRegisterCount = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
@@ -1058,6 +1249,11 @@ private:
         unsigned int continuationStack = 0;
         CheckOptix(optixUtilComputeStackSizes(&stackSizes, 1, 0, 0, &directCallableStackTraversal, &directCallableStackState, &continuationStack), "optixUtilComputeStackSizes");
         CheckOptix(optixPipelineSetStackSize(pipeline_, directCallableStackTraversal, directCallableStackState, continuationStack, 1), "optixPipelineSetStackSize");
+    }
+
+    void CreateCudaModule(const std::string& ptx) {
+        CheckCudaDriver(cuModuleLoadDataEx(&cudaModule_, ptx.c_str(), 0, nullptr, nullptr), "cuModuleLoadDataEx");
+        CheckCudaDriver(cuModuleGetFunction(&toneMapKernel_, cudaModule_, "ToneMapToSurface"), "cuModuleGetFunction(ToneMapToSurface)");
     }
 
     void CreateSbt() {
@@ -1165,7 +1361,7 @@ private:
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(hitgroupRecordBuffer_), &hitRecord, sizeof(hitRecord), cudaMemcpyHostToDevice), "cudaMemcpy(hitgroupRecord-update)");
     }
 
-    std::string CompilePtx() {
+    std::string CompileOptixPtx() {
         nvrtcProgram program = nullptr;
         CheckNvrtc(nvrtcCreateProgram(&program, kOptixDeviceSource, "rayoptix_optix_kernels.cu", 0, nullptr, nullptr), "nvrtcCreateProgram");
 
@@ -1208,7 +1404,49 @@ private:
         return ptx;
     }
 
+    std::string CompilePresentPtx() {
+        nvrtcProgram program = nullptr;
+        CheckNvrtc(nvrtcCreateProgram(&program, kPresentDeviceSource, "rayoptix_present_kernels.cu", 0, nullptr, nullptr), "nvrtcCreateProgram");
+
+        cudaDeviceProp properties{};
+        CheckCuda(cudaGetDeviceProperties(&properties, 0), "cudaGetDeviceProperties");
+
+        std::string architecture = "--gpu-architecture=compute_" + std::to_string(properties.major) + std::to_string(properties.minor);
+        std::string cudaInclude = std::string("--include-path=") + ROPTIX_CUDA_INCLUDE_DIR;
+
+        std::vector<const char*> options = {
+            "--std=c++17",
+            "--use_fast_math",
+            "--device-as-default-execution-space",
+            architecture.c_str(),
+            cudaInclude.c_str(),
+        };
+
+        const auto compileResult = nvrtcCompileProgram(program, static_cast<int>(options.size()), options.data());
+
+        size_t logSize = 0;
+        CheckNvrtc(nvrtcGetProgramLogSize(program, &logSize), "nvrtcGetProgramLogSize");
+        if (logSize > 1) {
+            std::string log(logSize, '\0');
+            CheckNvrtc(nvrtcGetProgramLog(program, log.data()), "nvrtcGetProgramLog");
+            if (compileResult != NVRTC_SUCCESS) {
+                nvrtcDestroyProgram(&program);
+                throw OptixError("NVRTC compile log:\n" + log);
+            }
+        }
+
+        CheckNvrtc(compileResult, "nvrtcCompileProgram");
+
+        size_t ptxSize = 0;
+        CheckNvrtc(nvrtcGetPTXSize(program, &ptxSize), "nvrtcGetPTXSize");
+        std::string ptx(ptxSize, '\0');
+        CheckNvrtc(nvrtcGetPTX(program, ptx.data()), "nvrtcGetPTX");
+        CheckNvrtc(nvrtcDestroyProgram(&program), "nvrtcDestroyProgram");
+        return ptx;
+    }
+
     void Destroy() {
+        ReleaseOutputTexture();
         SafeCudaFree(beautyBuffer_);
         SafeCudaFree(denoisedBeautyBuffer_);
         SafeCudaFree(accumulationBuffer_);
@@ -1251,12 +1489,16 @@ private:
             optixModuleDestroy(module_);
             module_ = nullptr;
         }
+        if (cudaModule_ != nullptr) {
+            IgnoreCudaDriver(cuModuleUnload(cudaModule_));
+            cudaModule_ = nullptr;
+        }
         if (denoiser_ != nullptr) {
             optixDenoiserDestroy(denoiser_);
             denoiser_ = nullptr;
         }
         if (stream_ != nullptr) {
-            cudaStreamDestroy(stream_);
+            IgnoreCuda(cudaStreamDestroy(stream_));
             stream_ = nullptr;
         }
         if (context_ != nullptr) {
@@ -1320,7 +1562,7 @@ private:
 
     static void SafeCudaFree(CUdeviceptr& buffer) {
         if (buffer != 0) {
-            cudaFree(reinterpret_cast<void*>(buffer));
+            IgnoreCuda(cudaFree(reinterpret_cast<void*>(buffer)));
             buffer = 0;
         }
     }
@@ -1407,6 +1649,8 @@ private:
     cudaStream_t stream_ = nullptr;
     OptixDenoiser denoiser_ = nullptr;
     OptixModule module_ = nullptr;
+    CUmodule cudaModule_ = nullptr;
+    CUfunction toneMapKernel_ = nullptr;
     OptixPipeline pipeline_ = nullptr;
     OptixProgramGroup raygenProgramGroup_ = nullptr;
     OptixProgramGroup missProgramGroup_ = nullptr;
@@ -1441,6 +1685,8 @@ private:
     CUdeviceptr denoiserScratchBuffer_ = 0;
     CUdeviceptr gasScratchBuffer_ = 0;
     CUdeviceptr gasOutputBuffer_ = 0;
+    cudaGraphicsResource_t textureInteropResource_ = nullptr;
+    unsigned int registeredOutputTextureId_ = 0;
 
     size_t vertexBufferCapacity_ = 0;
     size_t normalBufferCapacity_ = 0;
@@ -1454,7 +1700,6 @@ private:
 
     OptixDenoiserSizes denoiserSizes_{};
     OptixTraversableHandle gasHandle_ = 0;
-    std::vector<float4> hostBeautyBuffer_;
     float previousViewProjection_[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
@@ -1493,6 +1738,14 @@ extern "C" void roptixDestroy(void* handle) {
     delete static_cast<NativeRenderer*>(handle);
 }
 
+extern "C" void roptixReleaseOutputTexture(void* handle, unsigned int textureId) {
+    if (handle == nullptr) {
+        return;
+    }
+
+    static_cast<NativeRenderer*>(handle)->ReleaseOutputTextureForInterop(textureId);
+}
+
 extern "C" bool roptixResize(void* handle, int renderWidth, int renderHeight, int outputWidth, int outputHeight, char* error, int errorCapacity) {
     try {
         if (handle == nullptr) {
@@ -1527,8 +1780,7 @@ extern "C" bool roptixRender(
     const NativeMaterial* materials,
     int materialCount,
     unsigned int frameIndex,
-    uint8_t* outputPixels,
-    int outputLength,
+    unsigned int outputTextureId,
     NativeFrameStats* stats,
     char* error,
     int errorCapacity) {
@@ -1553,8 +1805,7 @@ extern "C" bool roptixRender(
             materials,
             materialCount,
             frameIndex,
-            outputPixels,
-            outputLength,
+            outputTextureId,
             stats);
         CopyError(error, errorCapacity, "");
         return true;
