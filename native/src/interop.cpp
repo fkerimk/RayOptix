@@ -22,6 +22,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -68,7 +69,10 @@ struct NativeRenderSettings {
     float sunAngularRadius;
     float ambientIntensity;
     int enableDlss;
+    int enableRayReconstruction;
+    int enableFrameGeneration;
     int dlssPerfQuality;
+    int rayReconstructionPreset;
     float jitterOffsetX;
     float jitterOffsetY;
 };
@@ -208,7 +212,10 @@ struct NativeRenderSettings {
     float sunAngularRadius;
     float ambientIntensity;
     int enableDlss;
+    int enableRayReconstruction;
+    int enableFrameGeneration;
     int dlssPerfQuality;
+    int rayReconstructionPreset;
     float jitterOffsetX;
     float jitterOffsetY;
 };
@@ -824,18 +831,33 @@ public:
 
         CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize");
 
-        const CUdeviceptr beautySource = settings.enableDenoiser != 0
+        const bool useRayReconstruction = settings.enableDlss != 0 && settings.enableRayReconstruction != 0;
+        const CUdeviceptr denoisedBeautySource = settings.enableDenoiser != 0
             ? DenoiseBeauty()
             : beautyBuffer_;
 
-        CUdeviceptr presentationSource = beautySource;
+        CUdeviceptr presentationSource = denoisedBeautySource;
         int presentationWidth = width_;
         int presentationHeight = height_;
 
-        if (settings.enableDlss != 0 && TryEvaluateDlss(beautySource, settings, frameIndex)) {
+        std::string rayReconstructionFailure;
+        if (useRayReconstruction && TryEvaluateRayReconstruction(beautyBuffer_, settings, frameIndex)) {
             presentationSource = dlssOutputBuffer_;
             presentationWidth = outputWidth_;
             presentationHeight = outputHeight_;
+        } else {
+            rayReconstructionFailure = useRayReconstruction ? lastFeatureStatus_ : "";
+        }
+
+        if (presentationWidth == width_ &&
+            presentationHeight == height_ &&
+            settings.enableDlss != 0 &&
+            TryEvaluateDlssSuperSampling(denoisedBeautySource, settings, frameIndex)) {
+            presentationSource = dlssOutputBuffer_;
+            presentationWidth = outputWidth_;
+            presentationHeight = outputHeight_;
+        } else if (!rayReconstructionFailure.empty() && settings.enableDlss != 0) {
+            SetFeatureStatus(rayReconstructionFailure + " | Fallback SR: " + lastFeatureStatus_);
         }
 
         const auto presentationSize = static_cast<size_t>(presentationWidth) * static_cast<size_t>(presentationHeight) * sizeof(float4);
@@ -854,7 +876,30 @@ public:
             outputPixels);
     }
 
+    const std::string& GetLastFeatureStatus() const {
+        return lastFeatureStatus_;
+    }
+
 private:
+    static std::string NgxResultToString(NVSDK_NGX_Result result) {
+        const wchar_t* wide = GetNGXResultAsString(result);
+        if (wide == nullptr) {
+            return "Unknown NGX result";
+        }
+
+        std::string converted;
+        while (*wide != L'\0') {
+            const auto code = static_cast<unsigned int>(*wide++);
+            converted.push_back(code <= 0x7F ? static_cast<char>(code) : '?');
+        }
+
+        return converted;
+    }
+
+    void SetFeatureStatus(std::string status) {
+        lastFeatureStatus_ = std::move(status);
+    }
+
     void InitializeOptix() {
         int deviceCount = 0;
         CheckCuda(cudaGetDeviceCount(&deviceCount), "cudaGetDeviceCount");
@@ -976,6 +1021,73 @@ private:
             NVSDK_NGX_Version_API);
 
         dlssAvailable_ = result == NVSDK_NGX_Result_Success;
+        SetFeatureStatus(dlssAvailable_
+            ? "NGX initialized"
+            : "NGX init failed: " + NgxResultToString(result));
+
+        if (dlssAvailable_) {
+            QueryNgxSupport();
+        }
+    }
+
+    void QueryNgxSupport() {
+        int cudaDevice = 0;
+        CheckCuda(cudaGetDevice(&cudaDevice), "cudaGetDevice");
+
+        const wchar_t* searchPaths[] = {featureSearchPath_.c_str()};
+        NVSDK_NGX_FeatureCommonInfo featureInfo{};
+        featureInfo.PathListInfo.Path = searchPaths;
+        featureInfo.PathListInfo.Length = 1;
+
+        NVSDK_NGX_Application_Identifier identifier{};
+        identifier.IdentifierType = NVSDK_NGX_Application_Identifier_Type_Project_Id;
+        identifier.v.ProjectDesc.ProjectId = "a0f57b54-1daf-4934-90ae-c4035c19df04";
+        identifier.v.ProjectDesc.EngineType = NVSDK_NGX_ENGINE_TYPE_CUSTOM;
+        identifier.v.ProjectDesc.EngineVersion = "RayOptix";
+
+        auto queryFeature = [&](NVSDK_NGX_Feature feature, const char* name, unsigned int* supportFlagsOut) {
+            NVSDK_NGX_FeatureDiscoveryInfo discoveryInfo{};
+            discoveryInfo.SDKVersion = NVSDK_NGX_Version_API;
+            discoveryInfo.FeatureID = feature;
+            discoveryInfo.Identifier = identifier;
+            discoveryInfo.ApplicationDataPath = appDataPath_.c_str();
+            discoveryInfo.FeatureInfo = &featureInfo;
+
+            NVSDK_NGX_FeatureRequirement requirement{};
+            const auto queryResult = NVSDK_NGX_CUDA_GetFeatureRequirements(cudaDevice, &discoveryInfo, &requirement);
+            if (NVSDK_NGX_FAILED(queryResult)) {
+                *supportFlagsOut = 0xFFFFFFFFu;
+                return std::string(name) + " requirements query failed: " + NgxResultToString(queryResult);
+            }
+
+            *supportFlagsOut = static_cast<unsigned int>(requirement.FeatureSupported);
+            std::ostringstream stream;
+            stream << name
+                   << " flags=" << static_cast<unsigned int>(requirement.FeatureSupported)
+                   << " minHW=" << requirement.MinHWArchitecture;
+            return stream.str();
+        };
+
+        std::string superSamplingStatus = queryFeature(NVSDK_NGX_Feature_SuperSampling, "SR", &superSamplingSupportFlags_);
+        std::string rayReconstructionStatus = queryFeature(NVSDK_NGX_Feature_RayReconstruction, "RR", &rayReconstructionSupportFlags_);
+
+        NVSDK_NGX_Parameter* capabilityParams = nullptr;
+        if (NVSDK_NGX_SUCCEED(NVSDK_NGX_CUDA_GetCapabilityParameters(&capabilityParams)) && capabilityParams != nullptr) {
+            unsigned int superSamplingAvailable = 0;
+            unsigned int rayReconstructionAvailable = 0;
+            NVSDK_NGX_Parameter_GetUI(capabilityParams, NVSDK_NGX_Parameter_SuperSampling_Available, &superSamplingAvailable);
+            NVSDK_NGX_Parameter_GetUI(capabilityParams, NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &rayReconstructionAvailable);
+            capabilitySuperSamplingAvailable_ = superSamplingAvailable;
+            capabilityRayReconstructionAvailable_ = rayReconstructionAvailable;
+            NVSDK_NGX_CUDA_DestroyParameters(capabilityParams);
+        }
+
+        SetFeatureStatus(
+            superSamplingStatus +
+            " | capSR=" + std::to_string(capabilitySuperSamplingAvailable_) +
+            " | " +
+            rayReconstructionStatus +
+            " | capRR=" + std::to_string(capabilityRayReconstructionAvailable_));
     }
 
     void RecreateGuideBuffers() {
@@ -1011,10 +1123,181 @@ private:
             NVSDK_NGX_CUDA_ReleaseFeature(dlssHandle_);
             dlssHandle_ = nullptr;
         }
+
+        if (rayReconstructionHandle_ != nullptr) {
+            NVSDK_NGX_CUDA_ReleaseFeature(rayReconstructionHandle_);
+            rayReconstructionHandle_ = nullptr;
+        }
+
+        dlssPerfQuality_ = -1;
+        rayReconstructionPerfQuality_ = -1;
+        rayReconstructionPreset_ = -1;
     }
 
-    bool TryEvaluateDlss(CUdeviceptr beautySource, const NativeRenderSettings& settings, unsigned int frameIndex) {
+    std::string DescribeFeatureSupport(NVSDK_NGX_Feature feature) const {
+        std::ostringstream stream;
+        if (feature == NVSDK_NGX_Feature_SuperSampling) {
+            stream << "SR(flags=" << superSamplingSupportFlags_
+                   << ",cap=" << capabilitySuperSamplingAvailable_ << ")";
+        } else if (feature == NVSDK_NGX_Feature_RayReconstruction) {
+            stream << "RR(flags=" << rayReconstructionSupportFlags_
+                   << ",cap=" << capabilityRayReconstructionAvailable_ << ")";
+        } else {
+            stream << "feature(" << static_cast<unsigned int>(feature) << ")";
+        }
+
+        return stream.str();
+    }
+
+    void EnsureNgxScratchBuffer(NVSDK_NGX_Feature feature, NVSDK_NGX_Parameter* params) {
+        size_t scratchSize = 0;
+        const auto scratchResult = NVSDK_NGX_CUDA_GetScratchBufferSize(feature, params, &scratchSize);
+        if (NVSDK_NGX_FAILED(scratchResult)) {
+            throw OptixError(
+                "NGX scratch query failed for " +
+                DescribeFeatureSupport(feature) +
+                ": " +
+                NgxResultToString(scratchResult));
+        }
+
+        if (scratchSize == 0) {
+            NVSDK_NGX_Parameter_SetVoidPointer(params, NVSDK_NGX_Parameter_Scratch, nullptr);
+            NVSDK_NGX_Parameter_SetULL(params, NVSDK_NGX_Parameter_Scratch_SizeInBytes, 0);
+            return;
+        }
+
+        EnsureBuffer(ngxScratchBuffer_, ngxScratchCapacity_, scratchSize);
+        NVSDK_NGX_Parameter_SetVoidPointer(params, NVSDK_NGX_Parameter_Scratch, reinterpret_cast<void*>(ngxScratchBuffer_));
+        NVSDK_NGX_Parameter_SetULL(params, NVSDK_NGX_Parameter_Scratch_SizeInBytes, static_cast<unsigned long long>(scratchSize));
+    }
+
+    static const char* GetRayReconstructionPresetKey(int dlssPerfQuality) {
+        switch (dlssPerfQuality) {
+            case 5:
+                return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA;
+            case 2:
+                return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality;
+            case 1:
+                return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced;
+            case 0:
+                return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance;
+            case 3:
+                return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance;
+            case 4:
+                return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality;
+            default:
+                return NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced;
+        }
+    }
+
+    static void ApplyRayReconstructionPreset(NVSDK_NGX_Parameter* params, const NativeRenderSettings& settings) {
+        if (settings.rayReconstructionPreset == 0) {
+            return;
+        }
+
+        NVSDK_NGX_Parameter_SetUI(
+            params,
+            GetRayReconstructionPresetKey(settings.dlssPerfQuality),
+            static_cast<unsigned int>(settings.rayReconstructionPreset));
+    }
+
+    bool TryEvaluateDlssSuperSampling(CUdeviceptr beautySource, const NativeRenderSettings& settings, unsigned int frameIndex) {
         if (!dlssAvailable_) {
+            SetFeatureStatus("DLSS unavailable: NGX init failed");
+            return false;
+        }
+
+        if (dlssHandle_ == nullptr || dlssPerfQuality_ != settings.dlssPerfQuality) {
+            if (dlssHandle_ != nullptr) {
+                NVSDK_NGX_CUDA_ReleaseFeature(dlssHandle_);
+                dlssHandle_ = nullptr;
+            }
+
+            NVSDK_NGX_Parameter* createParams = nullptr;
+            if (NVSDK_NGX_FAILED(NVSDK_NGX_CUDA_AllocateParameters(&createParams))) {
+                SetFeatureStatus("DLSS create failed: could not allocate NGX params");
+                return false;
+            }
+
+            NVSDK_NGX_DLSS_Create_Params createDlssParams{};
+            createDlssParams.Feature.InWidth = static_cast<unsigned int>(width_);
+            createDlssParams.Feature.InHeight = static_cast<unsigned int>(height_);
+            createDlssParams.Feature.InTargetWidth = static_cast<unsigned int>(outputWidth_);
+            createDlssParams.Feature.InTargetHeight = static_cast<unsigned int>(outputHeight_);
+            createDlssParams.Feature.InPerfQualityValue = static_cast<NVSDK_NGX_PerfQuality_Value>(settings.dlssPerfQuality);
+            createDlssParams.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+            createDlssParams.InEnableOutputSubrects = false;
+
+            NVSDK_NGX_Parameter_SetVoidPointer(createParams, NVSDK_NGX_Parameter_Input1, nullptr);
+            NVSDK_NGX_Parameter_SetVoidPointer(createParams, NVSDK_NGX_Parameter_Input2, stream_);
+            NVSDK_NGX_Parameter_SetUI(createParams, NVSDK_NGX_Parameter_Width, createDlssParams.Feature.InWidth);
+            NVSDK_NGX_Parameter_SetUI(createParams, NVSDK_NGX_Parameter_Height, createDlssParams.Feature.InHeight);
+            NVSDK_NGX_Parameter_SetUI(createParams, NVSDK_NGX_Parameter_OutWidth, createDlssParams.Feature.InTargetWidth);
+            NVSDK_NGX_Parameter_SetUI(createParams, NVSDK_NGX_Parameter_OutHeight, createDlssParams.Feature.InTargetHeight);
+            NVSDK_NGX_Parameter_SetI(createParams, NVSDK_NGX_Parameter_PerfQualityValue, createDlssParams.Feature.InPerfQualityValue);
+            NVSDK_NGX_Parameter_SetI(createParams, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, createDlssParams.InFeatureCreateFlags);
+            NVSDK_NGX_Parameter_SetI(createParams, NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, createDlssParams.InEnableOutputSubrects ? 1 : 0);
+            EnsureNgxScratchBuffer(NVSDK_NGX_Feature_SuperSampling, createParams);
+
+            const auto createResult = NVSDK_NGX_CUDA_CreateFeature(NVSDK_NGX_Feature_SuperSampling, createParams, &dlssHandle_);
+            NVSDK_NGX_CUDA_DestroyParameters(createParams);
+            if (NVSDK_NGX_FAILED(createResult)) {
+                dlssHandle_ = nullptr;
+                SetFeatureStatus("DLSS create failed: " + NgxResultToString(createResult));
+                return false;
+            }
+
+            dlssPerfQuality_ = settings.dlssPerfQuality;
+        }
+
+        NVSDK_NGX_Parameter* evalParams = nullptr;
+        if (NVSDK_NGX_FAILED(NVSDK_NGX_CUDA_AllocateParameters(&evalParams))) {
+            SetFeatureStatus("DLSS eval failed: could not allocate NGX params");
+            return false;
+        }
+
+        NVSDK_NGX_Parameter_SetVoidPointer(evalParams, NVSDK_NGX_Parameter_Color, reinterpret_cast<void*>(beautySource));
+        NVSDK_NGX_Parameter_SetVoidPointer(evalParams, NVSDK_NGX_Parameter_Output, reinterpret_cast<void*>(dlssOutputBuffer_));
+        NVSDK_NGX_Parameter_SetVoidPointer(evalParams, NVSDK_NGX_Parameter_Depth, reinterpret_cast<void*>(depthBuffer_));
+        NVSDK_NGX_Parameter_SetVoidPointer(evalParams, NVSDK_NGX_Parameter_MotionVectors, reinterpret_cast<void*>(dlssMotionVectorsBuffer_));
+        NVSDK_NGX_Parameter_SetF(evalParams, NVSDK_NGX_Parameter_Jitter_Offset_X, settings.jitterOffsetX);
+        NVSDK_NGX_Parameter_SetF(evalParams, NVSDK_NGX_Parameter_Jitter_Offset_Y, settings.jitterOffsetY);
+        NVSDK_NGX_Parameter_SetF(evalParams, NVSDK_NGX_Parameter_Sharpness, 0.0f);
+        NVSDK_NGX_Parameter_SetI(evalParams, NVSDK_NGX_Parameter_Reset, frameIndex == 0 ? 1 : 0);
+        NVSDK_NGX_Parameter_SetF(evalParams, NVSDK_NGX_Parameter_MV_Scale_X, 1.0f);
+        NVSDK_NGX_Parameter_SetF(evalParams, NVSDK_NGX_Parameter_MV_Scale_Y, 1.0f);
+        NVSDK_NGX_Parameter_SetF(evalParams, NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
+        NVSDK_NGX_Parameter_SetF(evalParams, NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, 0);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, 0);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, 0);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, 0);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, 0);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_X, 0);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_Y, 0);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X, 0);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y, 0);
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, static_cast<unsigned int>(width_));
+        NVSDK_NGX_Parameter_SetUI(evalParams, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, static_cast<unsigned int>(height_));
+        NVSDK_NGX_Parameter_SetVoidPointer(evalParams, NVSDK_NGX_Parameter_TransparencyMask, nullptr);
+        NVSDK_NGX_Parameter_SetVoidPointer(evalParams, NVSDK_NGX_Parameter_ExposureTexture, nullptr);
+        NVSDK_NGX_Parameter_SetVoidPointer(evalParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, nullptr);
+
+        const auto evaluateResult = NVSDK_NGX_CUDA_EvaluateFeature(dlssHandle_, evalParams, nullptr);
+        NVSDK_NGX_CUDA_DestroyParameters(evalParams);
+        if (NVSDK_NGX_FAILED(evaluateResult)) {
+            SetFeatureStatus("DLSS eval failed: " + NgxResultToString(evaluateResult));
+            return false;
+        }
+
+        SetFeatureStatus("Active path: DLSS Super Resolution");
+        return true;
+    }
+
+    bool TryEvaluateRayReconstruction(CUdeviceptr beautySource, const NativeRenderSettings& settings, unsigned int frameIndex) {
+        if (!dlssAvailable_) {
+            SetFeatureStatus("RR unavailable: NGX init failed");
             return false;
         }
 
@@ -1052,14 +1335,17 @@ private:
             cudaMemcpy(reinterpret_cast<void*>(dlssMotionVectorsBuffer_), hostMotionVectors_.data(), worldPositionSize * sizeof(float2), cudaMemcpyHostToDevice),
             "cudaMemcpy(dlssMotionVectors)");
 
-        if (dlssHandle_ == nullptr || dlssPerfQuality_ != settings.dlssPerfQuality) {
-            if (dlssHandle_ != nullptr) {
-                NVSDK_NGX_CUDA_ReleaseFeature(dlssHandle_);
-                dlssHandle_ = nullptr;
+        if (rayReconstructionHandle_ == nullptr ||
+            rayReconstructionPerfQuality_ != settings.dlssPerfQuality ||
+            rayReconstructionPreset_ != settings.rayReconstructionPreset) {
+            if (rayReconstructionHandle_ != nullptr) {
+                NVSDK_NGX_CUDA_ReleaseFeature(rayReconstructionHandle_);
+                rayReconstructionHandle_ = nullptr;
             }
 
             NVSDK_NGX_Parameter* createParams = nullptr;
             if (NVSDK_NGX_FAILED(NVSDK_NGX_CUDA_AllocateParameters(&createParams))) {
+                SetFeatureStatus("RR create failed: could not allocate NGX params");
                 return false;
             }
 
@@ -1075,19 +1361,24 @@ private:
             createDlssdParams.Feature.InUseHWDepth = NVSDK_NGX_DLSS_Depth_Type_HW;
             createDlssdParams.InCUContext = nullptr;
             createDlssdParams.InCUStream = stream_;
+            ApplyRayReconstructionPreset(createParams, settings);
+            EnsureNgxScratchBuffer(NVSDK_NGX_Feature_RayReconstruction, createParams);
 
-            const auto createResult = NGX_CUDA_CREATE_DLSSD_EXT(&dlssHandle_, createParams, &createDlssdParams);
+            const auto createResult = NGX_CUDA_CREATE_DLSSD_EXT(&rayReconstructionHandle_, createParams, &createDlssdParams);
             NVSDK_NGX_CUDA_DestroyParameters(createParams);
             if (NVSDK_NGX_FAILED(createResult)) {
-                dlssHandle_ = nullptr;
+                rayReconstructionHandle_ = nullptr;
+                SetFeatureStatus("RR create failed: " + NgxResultToString(createResult));
                 return false;
             }
 
-            dlssPerfQuality_ = settings.dlssPerfQuality;
+            rayReconstructionPerfQuality_ = settings.dlssPerfQuality;
+            rayReconstructionPreset_ = settings.rayReconstructionPreset;
         }
 
         NVSDK_NGX_Parameter* evalParams = nullptr;
         if (NVSDK_NGX_FAILED(NVSDK_NGX_CUDA_AllocateParameters(&evalParams))) {
+            SetFeatureStatus("RR eval failed: could not allocate NGX params");
             return false;
         }
 
@@ -1111,9 +1402,15 @@ private:
         evalDlssdParams.InPreExposure = 1.0f;
         evalDlssdParams.InExposureScale = 1.0f;
 
-        const auto evaluateResult = NGX_CUDA_EVALUATE_DLSSD_EXT(dlssHandle_, evalParams, &evalDlssdParams);
+        const auto evaluateResult = NGX_CUDA_EVALUATE_DLSSD_EXT(rayReconstructionHandle_, evalParams, &evalDlssdParams);
         NVSDK_NGX_CUDA_DestroyParameters(evalParams);
-        return !NVSDK_NGX_FAILED(evaluateResult);
+        if (NVSDK_NGX_FAILED(evaluateResult)) {
+            SetFeatureStatus("RR eval failed: " + NgxResultToString(evaluateResult));
+            return false;
+        }
+
+        SetFeatureStatus("Active path: DLSS Ray Reconstruction");
+        return true;
     }
 
     void BuildViewProjectionMatrices(const NativeCamera& camera, float* current, float* previous, float* worldToView, float* viewToClip) {
@@ -1410,6 +1707,7 @@ private:
         SafeCudaFree(denoiserScratchBuffer_);
         SafeCudaFree(gasScratchBuffer_);
         SafeCudaFree(gasOutputBuffer_);
+        SafeCudaFree(ngxScratchBuffer_);
 
         if (pipeline_ != nullptr) {
             optixPipelineDestroy(pipeline_);
@@ -1446,6 +1744,10 @@ private:
         if (dlssHandle_ != nullptr) {
             NVSDK_NGX_CUDA_ReleaseFeature(dlssHandle_);
             dlssHandle_ = nullptr;
+        }
+        if (rayReconstructionHandle_ != nullptr) {
+            NVSDK_NGX_CUDA_ReleaseFeature(rayReconstructionHandle_);
+            rayReconstructionHandle_ = nullptr;
         }
         if (dlssAvailable_) {
             NVSDK_NGX_CUDA_Shutdown();
@@ -1593,6 +1895,7 @@ private:
     CUdeviceptr denoiserScratchBuffer_ = 0;
     CUdeviceptr gasScratchBuffer_ = 0;
     CUdeviceptr gasOutputBuffer_ = 0;
+    CUdeviceptr ngxScratchBuffer_ = 0;
 
     size_t vertexBufferCapacity_ = 0;
     size_t normalBufferCapacity_ = 0;
@@ -1603,6 +1906,7 @@ private:
     size_t denoiserScratchCapacity_ = 0;
     size_t gasScratchCapacity_ = 0;
     size_t gasOutputCapacity_ = 0;
+    size_t ngxScratchCapacity_ = 0;
 
     OptixDenoiserSizes denoiserSizes_{};
     OptixTraversableHandle gasHandle_ = 0;
@@ -1610,10 +1914,18 @@ private:
     std::vector<float4> hostWorldPositionBuffer_;
     std::vector<float2> hostMotionVectors_;
     bool dlssAvailable_ = false;
+    unsigned int superSamplingSupportFlags_ = 0;
+    unsigned int rayReconstructionSupportFlags_ = 0;
+    unsigned int capabilitySuperSamplingAvailable_ = 0;
+    unsigned int capabilityRayReconstructionAvailable_ = 0;
     NVSDK_NGX_Handle* dlssHandle_ = nullptr;
+    NVSDK_NGX_Handle* rayReconstructionHandle_ = nullptr;
     int dlssPerfQuality_ = -1;
+    int rayReconstructionPerfQuality_ = -1;
+    int rayReconstructionPreset_ = -1;
     std::wstring featureSearchPath_;
     std::wstring appDataPath_;
+    std::string lastFeatureStatus_ = "NGX not evaluated yet";
     float previousViewProjection_[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
@@ -1734,6 +2046,28 @@ extern "C" bool roptixRender(
         CopyError(error, errorCapacity, "");
         return true;
     } catch (const std::exception& exception) {
+        CopyError(error, errorCapacity, exception.what());
+        return false;
+    }
+}
+
+extern "C" bool roptixGetLastFeatureStatus(
+    void* handle,
+    char* status,
+    int statusCapacity,
+    char* error,
+    int errorCapacity) {
+    try {
+        if (handle == nullptr) {
+            throw OptixError("Renderer handle is null.");
+        }
+
+        auto* renderer = static_cast<NativeRenderer*>(handle);
+        CopyError(error, errorCapacity, "");
+        CopyError(status, statusCapacity, renderer->GetLastFeatureStatus());
+        return true;
+    } catch (const std::exception& exception) {
+        CopyError(status, statusCapacity, "");
         CopyError(error, errorCapacity, exception.what());
         return false;
     }

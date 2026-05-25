@@ -59,6 +59,9 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
         public static class Dlss {
             public static DlssMode Mode = DlssMode.Balanced;
+            public static bool EnableRayReconstruction = true;
+            public static bool EnableFrameGeneration = false;
+            public static RayReconstructionPreset RayReconstructionPreset = RayReconstructionPreset.Default;
         }
     }
 
@@ -77,6 +80,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private string? initError;
     private bool initAttempted;
     private string? lastLoggedError;
+    private string lastFeatureStatus = "NGX not evaluated yet";
 
     public override string Name => initError is null ? "OptiX" : "OptiX (Unavailable)";
 
@@ -177,6 +181,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             0,
             Color.White);
 
+        UpdateFeatureStatus();
         DrawDebugState();
     }
 
@@ -348,6 +353,24 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             stateChanged = true;
         }
 
+        if (IsKeyPressed(KeyboardKey.F9)) {
+
+            Settings.Dlss.EnableRayReconstruction = !Settings.Dlss.EnableRayReconstruction;
+            stateChanged = true;
+        }
+
+        if (IsKeyPressed(KeyboardKey.F10)) {
+
+            Settings.Dlss.RayReconstructionPreset = NextRayReconstructionPreset(Settings.Dlss.RayReconstructionPreset);
+            stateChanged = true;
+        }
+
+        if (IsKeyPressed(KeyboardKey.F11)) {
+
+            Settings.Dlss.EnableFrameGeneration = !Settings.Dlss.EnableFrameGeneration;
+            stateChanged = true;
+        }
+
         if (stateChanged) {
 
             frameIndex = 0;
@@ -363,6 +386,35 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         DrawText($"F5/F6 Render Scale: {(Settings.Quality.EnableDlss ? "DLSS controlled" : $"{Settings.Quality.RenderScale:0.00}x")}", 10, 152, 20, Color.DarkBlue);
         DrawText($"F7 DLSS: {(Settings.Quality.EnableDlss ? "ON" : "OFF")}", 10, 176, 20, Color.DarkBlue);
         DrawText($"F8 DLSS Mode: {Settings.Dlss.Mode}", 10, 200, 20, Color.DarkBlue);
+        DrawText($"F9 Ray Reconstruction: {(Settings.Dlss.EnableRayReconstruction ? "ON" : "OFF")}", 10, 224, 20, Color.DarkBlue);
+        DrawText($"F10 RR Preset: {Settings.Dlss.RayReconstructionPreset}", 10, 248, 20, Color.DarkBlue);
+        DrawText($"F11 Frame Generation: {(Settings.Dlss.EnableFrameGeneration ? "REQUESTED" : "OFF")} (CUDA NGX path unavailable)", 10, 272, 20, Color.DarkBlue);
+        DrawText($"NGX: {lastFeatureStatus}", 10, 296, 20, Color.Maroon);
+    }
+
+    private void UpdateFeatureStatus() {
+
+        if (nativeHandle == IntPtr.Zero) {
+
+            lastFeatureStatus = "Native renderer unavailable";
+            return;
+        }
+
+        var status = new StringBuilder(MaxErrorLength);
+        var error = new StringBuilder(MaxErrorLength);
+        if (!OptixNative.GetLastFeatureStatus(nativeHandle, status, status.Capacity, error, error.Capacity)) {
+
+            lastFeatureStatus = $"Status query failed: {error}";
+            LogErrorOnce(lastFeatureStatus);
+            return;
+        }
+
+        var newStatus = status.ToString();
+        if (!string.IsNullOrWhiteSpace(newStatus)) {
+
+            lastFeatureStatus = newStatus;
+            LogErrorOnce(lastFeatureStatus);
+        }
     }
 
     private void LogErrorOnce(string? error) {
@@ -447,7 +499,10 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             Settings.Lighting.SunAngularRadius,
             Settings.Lighting.AmbientIntensity,
             BoolToInt(Settings.Quality.EnableDlss),
+            BoolToInt(Settings.Dlss.EnableRayReconstruction),
+            BoolToInt(Settings.Dlss.EnableFrameGeneration),
             (int)Settings.Dlss.Mode,
+            (int)Settings.Dlss.RayReconstructionPreset,
             jitter.X,
             jitter.Y);
     }
@@ -538,6 +593,12 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         Dlaa = 5,
     }
 
+    private enum RayReconstructionPreset {
+        Default = 0,
+        TransformerD = 4,
+        TransformerE = 5,
+    }
+
     private static float GetDlssRenderScale() {
 
         return Settings.Dlss.Mode switch {
@@ -560,6 +621,15 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             DlssMode.UltraPerformance => DlssMode.UltraQuality,
             DlssMode.UltraQuality => DlssMode.Dlaa,
             _ => DlssMode.MaxPerf,
+        };
+    }
+
+    private static RayReconstructionPreset NextRayReconstructionPreset(RayReconstructionPreset preset) {
+
+        return preset switch {
+            RayReconstructionPreset.Default => RayReconstructionPreset.TransformerD,
+            RayReconstructionPreset.TransformerD => RayReconstructionPreset.TransformerE,
+            _ => RayReconstructionPreset.Default,
         };
     }
 
@@ -628,6 +698,15 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             uint frameIndex,
             byte[] outputPixels,
             int outputLength,
+            StringBuilder error,
+            int errorCapacity);
+
+        [DllImport(LibraryName, EntryPoint = "roptixGetLastFeatureStatus", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        public static extern bool GetLastFeatureStatus(
+            IntPtr handle,
+            StringBuilder status,
+            int statusCapacity,
             StringBuilder error,
             int errorCapacity);
     }
