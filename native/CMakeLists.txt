@@ -13,12 +13,12 @@ add_library(RayOptixNative SHARED
 )
 
 target_include_directories(RayOptixNative PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../external/optix-sdk/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../external/optix-dev/include
     ${CUDAToolkit_INCLUDE_DIRS}
 )
 
 target_compile_definitions(RayOptixNative PRIVATE
-    ROPTIX_OPTIX_INCLUDE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../external/optix-sdk/include"
+    ROPTIX_OPTIX_INCLUDE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../external/optix-dev/include"
     ROPTIX_CUDA_INCLUDE_DIR="${CUDA_INCLUDE_DIR}"
 )
 
