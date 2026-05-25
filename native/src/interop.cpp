@@ -52,6 +52,7 @@ struct NativeRenderSettings {
     int russianRouletteStartBounce;
     int enableAccumulation;
     int enableDenoiser;
+    int denoiserIntervalFrames;
     int enableSky;
     int enableSunLight;
     int enableHardShadows;
@@ -88,6 +89,7 @@ struct NativeFrameStats {
     double denoiseMs;
     double readbackMs;
     double toneMapMs;
+    int denoisedThisFrame;
 };
 
 struct LaunchParams {
@@ -215,6 +217,7 @@ struct NativeRenderSettings {
     int russianRouletteStartBounce;
     int enableAccumulation;
     int enableDenoiser;
+    int denoiserIntervalFrames;
     int enableSky;
     int enableSunLight;
     int enableHardShadows;
@@ -818,6 +821,8 @@ public:
         const auto accumulationSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
         CheckCuda(cudaMalloc(reinterpret_cast<void**>(&accumulationBuffer_), accumulationSize), "cudaMalloc(accumulationBuffer)");
         CheckCuda(cudaMemset(reinterpret_cast<void*>(accumulationBuffer_), 0, accumulationSize), "cudaMemset(accumulationBuffer)");
+        hasValidDenoisedBeauty_ = false;
+        presentFrameIndex_ = 0;
 
         RecreateGuideBuffers();
 
@@ -902,9 +907,16 @@ public:
         localStats.launchMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - launchStart).count();
 
         const auto denoiseStart = std::chrono::steady_clock::now();
-        const CUdeviceptr presentationSource = settings.enableDenoiser != 0
-            ? DenoiseBeauty()
-            : beautyBuffer_;
+        const int denoiserInterval = std::max(settings.denoiserIntervalFrames, 1);
+        const unsigned int denoiserFrameIndex = presentFrameIndex_++;
+        const bool shouldDenoise = settings.enableDenoiser != 0 &&
+            (denoiserFrameIndex == 0u || (denoiserFrameIndex % static_cast<unsigned int>(denoiserInterval)) == 0u);
+        CUdeviceptr presentationSource = beautyBuffer_;
+        if (shouldDenoise) {
+            presentationSource = DenoiseBeauty();
+            hasValidDenoisedBeauty_ = true;
+            localStats.denoisedThisFrame = 1;
+        }
         localStats.denoiseMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - denoiseStart).count();
 
         const auto toneMapStart = std::chrono::steady_clock::now();
@@ -940,8 +952,8 @@ private:
 
     void CreateDenoiser() {
         OptixDenoiserOptions denoiserOptions{};
-        denoiserOptions.guideAlbedo = 0;
-        denoiserOptions.guideNormal = 0;
+        denoiserOptions.guideAlbedo = 1;
+        denoiserOptions.guideNormal = 1;
         denoiserOptions.denoiseAlpha = OPTIX_DENOISER_ALPHA_MODE_COPY;
 
         CheckOptix(
@@ -993,6 +1005,19 @@ private:
         denoiserLayer.output = outputLayer;
 
         OptixDenoiserGuideLayer guideLayer{};
+        guideLayer.albedo.data = diffuseAlbedoGuideBuffer_;
+        guideLayer.albedo.width = static_cast<unsigned int>(width_);
+        guideLayer.albedo.height = static_cast<unsigned int>(height_);
+        guideLayer.albedo.rowStrideInBytes = static_cast<unsigned int>(width_ * static_cast<int>(sizeof(float4)));
+        guideLayer.albedo.pixelStrideInBytes = sizeof(float4);
+        guideLayer.albedo.format = OPTIX_PIXEL_FORMAT_FLOAT4;
+
+        guideLayer.normal.data = normalGuideBuffer_;
+        guideLayer.normal.width = static_cast<unsigned int>(width_);
+        guideLayer.normal.height = static_cast<unsigned int>(height_);
+        guideLayer.normal.rowStrideInBytes = static_cast<unsigned int>(width_ * static_cast<int>(sizeof(float4)));
+        guideLayer.normal.pixelStrideInBytes = sizeof(float4);
+        guideLayer.normal.format = OPTIX_PIXEL_FORMAT_FLOAT4;
 
         OptixDenoiserParams denoiserParams{};
         denoiserParams.hdrIntensity = 0;
@@ -1700,6 +1725,8 @@ private:
 
     OptixDenoiserSizes denoiserSizes_{};
     OptixTraversableHandle gasHandle_ = 0;
+    bool hasValidDenoisedBeauty_ = false;
+    unsigned int presentFrameIndex_ = 0;
     float previousViewProjection_[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,

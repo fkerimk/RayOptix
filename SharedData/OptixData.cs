@@ -48,6 +48,7 @@ internal struct OptixFrameStats {
     public double DenoiseMs;
     public double ReadbackMs;
     public double ToneMapMs;
+    public int DenoisedThisFrame;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -70,6 +71,7 @@ internal readonly struct OptixRenderSettings(
     int russianRouletteStartBounce,
     int enableAccumulation,
     int enableDenoiser,
+    int denoiserIntervalFrames,
     int enableSky,
     int enableSunLight,
     int enableHardShadows,
@@ -95,6 +97,7 @@ internal readonly struct OptixRenderSettings(
     public readonly int RussianRouletteStartBounce = russianRouletteStartBounce;
     public readonly int EnableAccumulation = enableAccumulation;
     public readonly int EnableDenoiser = enableDenoiser;
+    public readonly int DenoiserIntervalFrames = denoiserIntervalFrames;
     public readonly int EnableSky = enableSky;
     public readonly int EnableSunLight = enableSunLight;
     public readonly int EnableHardShadows = enableHardShadows;

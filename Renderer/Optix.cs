@@ -13,12 +13,15 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private static class Settings {
 
         public static class Quality {
-            public const int SamplesPerPixel = 16;
+            public const int SamplesPerPixel = 4;
             public const int MaxBounces = 4;
             public const int MinBounces = 1;
             public const int RussianRouletteStartBounce = 2;
             public const bool EnableAccumulation = true;
             public static bool EnableDenoiser = true;
+            public static int DenoiserIntervalFrames = 1;
+            public const int MinDenoiserIntervalFrames = 1;
+            public const int MaxDenoiserIntervalFrames = 32;
             public static float RenderScale = 1f;
             public const float MinRenderScale = 0.25f;
             public const float MaxRenderScale = 1.0f;
@@ -309,6 +312,20 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             stateChanged = true;
         }
 
+        if (IsKeyPressed(KeyboardKey.F7)) {
+            Settings.Quality.DenoiserIntervalFrames = Math.Max(
+                Settings.Quality.MinDenoiserIntervalFrames,
+                Settings.Quality.DenoiserIntervalFrames - 1);
+            stateChanged = true;
+        }
+
+        if (IsKeyPressed(KeyboardKey.F8)) {
+            Settings.Quality.DenoiserIntervalFrames = Math.Min(
+                Settings.Quality.MaxDenoiserIntervalFrames,
+                Settings.Quality.DenoiserIntervalFrames + 1);
+            stateChanged = true;
+        }
+
         if (IsKeyPressed(KeyboardKey.F5)) {
             Settings.Quality.RenderScale = MathF.Max(
                 Settings.Quality.MinRenderScale,
@@ -336,11 +353,13 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         DrawText($"F3 Hard Shadows: {(Settings.Shadows.EnableHardShadows ? "ON" : "OFF")}", 10, 104, 20, Color.DarkBlue);
         DrawText($"F4 Denoiser: {(Settings.Quality.EnableDenoiser ? "ON" : "OFF")}", 10, 128, 20, Color.DarkBlue);
         DrawText($"F5/F6 Render Scale: {Settings.Quality.RenderScale:0.00}x", 10, 152, 20, Color.DarkBlue);
-        DrawText($"Interop: {lastInteropMs:0.0} ms", 10, 176, 20, Color.Maroon);
-        DrawText($"Native Total: {lastFrameStats.TotalMs:0.0} ms", 10, 200, 20, Color.Maroon);
-        DrawText($"Upload/Launch: {lastFrameStats.UploadSceneMs:0.0} / {lastFrameStats.LaunchMs:0.0} ms", 10, 224, 20, Color.Maroon);
-        DrawText($"Denoise/Present: {lastFrameStats.DenoiseMs:0.0} / {lastFrameStats.ReadbackMs:0.0} ms", 10, 248, 20, Color.Maroon);
-        DrawText($"ToneMap/CSharp: {lastFrameStats.ToneMapMs:0.0} / {lastTextureUploadMs:0.0} ms", 10, 272, 20, Color.Maroon);
+        DrawText($"F7/F8 Denoiser Interval: {Settings.Quality.DenoiserIntervalFrames}", 10, 176, 20, Color.DarkBlue);
+        DrawText($"Interop: {lastInteropMs:0.0} ms", 10, 200, 20, Color.Maroon);
+        DrawText($"Native Total: {lastFrameStats.TotalMs:0.0} ms", 10, 224, 20, Color.Maroon);
+        DrawText($"Upload/Launch: {lastFrameStats.UploadSceneMs:0.0} / {lastFrameStats.LaunchMs:0.0} ms", 10, 248, 20, Color.Maroon);
+        DrawText($"Denoise/Present: {lastFrameStats.DenoiseMs:0.0} / {lastFrameStats.ReadbackMs:0.0} ms", 10, 272, 20, Color.Maroon);
+        DrawText($"ToneMap/CSharp: {lastFrameStats.ToneMapMs:0.0} / {lastTextureUploadMs:0.0} ms", 10, 296, 20, Color.Maroon);
+        DrawText($"Denoised Frame: {(lastFrameStats.DenoisedThisFrame != 0 ? "YES" : "NO")}", 10, 320, 20, Color.Maroon);
     }
 
     private void LogErrorOnce(string? error) {
@@ -402,6 +421,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             Settings.Quality.RussianRouletteStartBounce,
             BoolToInt(Settings.Quality.EnableAccumulation),
             BoolToInt(Settings.Quality.EnableDenoiser),
+            Settings.Quality.DenoiserIntervalFrames,
             BoolToInt(Settings.Lighting.EnableSky),
             BoolToInt(Settings.Lighting.EnableSunLight),
             BoolToInt(Settings.Shadows.EnableHardShadows),
