@@ -14,7 +14,6 @@ add_library(RayOptixNative SHARED
 
 target_include_directories(RayOptixNative PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../external/optix-sdk/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/../external/DLSS/include
     ${CUDAToolkit_INCLUDE_DIRS}
 )
 
@@ -27,6 +26,5 @@ target_link_libraries(RayOptixNative PRIVATE
     CUDA::cudart
     CUDA::cuda_driver
     CUDA::nvrtc
-    ${CMAKE_CURRENT_SOURCE_DIR}/../external/DLSS/lib/Linux_x86_64/libnvsdk_ngx.a
     dl
 )

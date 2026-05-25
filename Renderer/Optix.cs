@@ -18,7 +18,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             public const int RussianRouletteStartBounce = 2;
             public const bool EnableAccumulation = true;
             public static bool EnableDenoiser = true;
-            public static bool EnableDlss = true;
             public static float RenderScale = 0.3f;
             public const float MinRenderScale = 0.25f;
             public const float MaxRenderScale = 1.0f;
@@ -56,13 +55,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             public static bool EnableNormalDebug = false;
             public static bool LogNativeErrors = true;
         }
-
-        public static class Dlss {
-            public static DlssMode Mode = DlssMode.Balanced;
-            public static bool EnableRayReconstruction = true;
-            public static bool EnableFrameGeneration = false;
-            public static RayReconstructionPreset RayReconstructionPreset = RayReconstructionPreset.Default;
-        }
     }
 
     private readonly List<DrawCall> drawCalls = [];
@@ -80,7 +72,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private string? initError;
     private bool initAttempted;
     private string? lastLoggedError;
-    private string lastFeatureStatus = "NGX not evaluated yet";
 
     public override string Name => initError is null ? "OptiX" : "OptiX (Unavailable)";
 
@@ -181,7 +172,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             0,
             Color.White);
 
-        UpdateFeatureStatus();
         DrawDebugState();
     }
 
@@ -245,14 +235,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     }
 
     private static (int Width, int Height) GetRenderDimensions() {
-
-        if (Settings.Quality.EnableDlss) {
-
-            var dlssScale = GetDlssRenderScale();
-            var dlssWidth = Math.Max(1, (int)MathF.Round(GetScreenWidth() * dlssScale));
-            var dlssHeight = Math.Max(1, (int)MathF.Round(GetScreenHeight() * dlssScale));
-            return (dlssWidth, dlssHeight);
-        }
 
         var scale = Math.Clamp(
             Settings.Quality.RenderScale,
@@ -320,54 +302,16 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         }
 
         if (IsKeyPressed(KeyboardKey.F5)) {
-
-            if (!Settings.Quality.EnableDlss) {
-
-                Settings.Quality.RenderScale = MathF.Max(
-                    Settings.Quality.MinRenderScale,
-                    Settings.Quality.RenderScale - Settings.Quality.RenderScaleStep);
-            }
+            Settings.Quality.RenderScale = MathF.Max(
+                Settings.Quality.MinRenderScale,
+                Settings.Quality.RenderScale - Settings.Quality.RenderScaleStep);
             stateChanged = true;
         }
 
         if (IsKeyPressed(KeyboardKey.F6)) {
-
-            if (!Settings.Quality.EnableDlss) {
-
-                Settings.Quality.RenderScale = MathF.Min(
-                    Settings.Quality.MaxRenderScale,
-                    Settings.Quality.RenderScale + Settings.Quality.RenderScaleStep);
-            }
-            stateChanged = true;
-        }
-
-        if (IsKeyPressed(KeyboardKey.F7)) {
-
-            Settings.Quality.EnableDlss = !Settings.Quality.EnableDlss;
-            stateChanged = true;
-        }
-
-        if (IsKeyPressed(KeyboardKey.F8)) {
-
-            Settings.Dlss.Mode = NextDlssMode(Settings.Dlss.Mode);
-            stateChanged = true;
-        }
-
-        if (IsKeyPressed(KeyboardKey.F9)) {
-
-            Settings.Dlss.EnableRayReconstruction = !Settings.Dlss.EnableRayReconstruction;
-            stateChanged = true;
-        }
-
-        if (IsKeyPressed(KeyboardKey.F10)) {
-
-            Settings.Dlss.RayReconstructionPreset = NextRayReconstructionPreset(Settings.Dlss.RayReconstructionPreset);
-            stateChanged = true;
-        }
-
-        if (IsKeyPressed(KeyboardKey.F11)) {
-
-            Settings.Dlss.EnableFrameGeneration = !Settings.Dlss.EnableFrameGeneration;
+            Settings.Quality.RenderScale = MathF.Min(
+                Settings.Quality.MaxRenderScale,
+                Settings.Quality.RenderScale + Settings.Quality.RenderScaleStep);
             stateChanged = true;
         }
 
@@ -383,38 +327,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         DrawText($"F2 Sun Light: {(Settings.Lighting.EnableSunLight ? "ON" : "OFF")}", 10, 80, 20, Color.DarkBlue);
         DrawText($"F3 Hard Shadows: {(Settings.Shadows.EnableHardShadows ? "ON" : "OFF")}", 10, 104, 20, Color.DarkBlue);
         DrawText($"F4 Denoiser: {(Settings.Quality.EnableDenoiser ? "ON" : "OFF")}", 10, 128, 20, Color.DarkBlue);
-        DrawText($"F5/F6 Render Scale: {(Settings.Quality.EnableDlss ? "DLSS controlled" : $"{Settings.Quality.RenderScale:0.00}x")}", 10, 152, 20, Color.DarkBlue);
-        DrawText($"F7 DLSS: {(Settings.Quality.EnableDlss ? "ON" : "OFF")}", 10, 176, 20, Color.DarkBlue);
-        DrawText($"F8 DLSS Mode: {Settings.Dlss.Mode}", 10, 200, 20, Color.DarkBlue);
-        DrawText($"F9 Ray Reconstruction: {(Settings.Dlss.EnableRayReconstruction ? "ON" : "OFF")}", 10, 224, 20, Color.DarkBlue);
-        DrawText($"F10 RR Preset: {Settings.Dlss.RayReconstructionPreset}", 10, 248, 20, Color.DarkBlue);
-        DrawText($"F11 Frame Generation: {(Settings.Dlss.EnableFrameGeneration ? "REQUESTED" : "OFF")} (CUDA NGX path unavailable)", 10, 272, 20, Color.DarkBlue);
-        DrawText($"NGX: {lastFeatureStatus}", 10, 296, 20, Color.Maroon);
-    }
-
-    private void UpdateFeatureStatus() {
-
-        if (nativeHandle == IntPtr.Zero) {
-
-            lastFeatureStatus = "Native renderer unavailable";
-            return;
-        }
-
-        var status = new StringBuilder(MaxErrorLength);
-        var error = new StringBuilder(MaxErrorLength);
-        if (!OptixNative.GetLastFeatureStatus(nativeHandle, status, status.Capacity, error, error.Capacity)) {
-
-            lastFeatureStatus = $"Status query failed: {error}";
-            LogErrorOnce(lastFeatureStatus);
-            return;
-        }
-
-        var newStatus = status.ToString();
-        if (!string.IsNullOrWhiteSpace(newStatus)) {
-
-            lastFeatureStatus = newStatus;
-            LogErrorOnce(lastFeatureStatus);
-        }
+        DrawText($"F5/F6 Render Scale: {Settings.Quality.RenderScale:0.00}x", 10, 152, 20, Color.DarkBlue);
     }
 
     private void LogErrorOnce(string? error) {
@@ -469,10 +382,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     private static OptixRenderSettings BuildSettings(uint frameIndex) {
 
-        var jitter = Settings.Quality.EnableDlss
-            ? GetJitter(frameIndex)
-            : Vector2.Zero;
-
         return new OptixRenderSettings(
             Settings.Quality.SamplesPerPixel,
             Settings.Quality.MaxBounces,
@@ -497,14 +406,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             Settings.Lighting.SunDirectionZ,
             Settings.Lighting.SunIntensity,
             Settings.Lighting.SunAngularRadius,
-            Settings.Lighting.AmbientIntensity,
-            BoolToInt(Settings.Quality.EnableDlss),
-            BoolToInt(Settings.Dlss.EnableRayReconstruction),
-            BoolToInt(Settings.Dlss.EnableFrameGeneration),
-            (int)Settings.Dlss.Mode,
-            (int)Settings.Dlss.RayReconstructionPreset,
-            jitter.X,
-            jitter.Y);
+            Settings.Lighting.AmbientIntensity);
     }
 
     private static int BoolToInt(bool value) {
@@ -584,82 +486,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     private readonly record struct DrawCall(MeshData MeshData, MaterialData MaterialData, Matrix4x4 Matrix);
 
-    private enum DlssMode {
-        MaxPerf = 0,
-        Balanced = 1,
-        MaxQuality = 2,
-        UltraPerformance = 3,
-        UltraQuality = 4,
-        Dlaa = 5,
-    }
-
-    private enum RayReconstructionPreset {
-        Default = 0,
-        TransformerD = 4,
-        TransformerE = 5,
-    }
-
-    private static float GetDlssRenderScale() {
-
-        return Settings.Dlss.Mode switch {
-            DlssMode.MaxPerf => 0.5f,
-            DlssMode.Balanced => 0.58f,
-            DlssMode.MaxQuality => 0.67f,
-            DlssMode.UltraPerformance => 0.33f,
-            DlssMode.UltraQuality => 0.77f,
-            DlssMode.Dlaa => 1.0f,
-            _ => 0.58f,
-        };
-    }
-
-    private static DlssMode NextDlssMode(DlssMode mode) {
-
-        return mode switch {
-            DlssMode.MaxPerf => DlssMode.Balanced,
-            DlssMode.Balanced => DlssMode.MaxQuality,
-            DlssMode.MaxQuality => DlssMode.UltraPerformance,
-            DlssMode.UltraPerformance => DlssMode.UltraQuality,
-            DlssMode.UltraQuality => DlssMode.Dlaa,
-            _ => DlssMode.MaxPerf,
-        };
-    }
-
-    private static RayReconstructionPreset NextRayReconstructionPreset(RayReconstructionPreset preset) {
-
-        return preset switch {
-            RayReconstructionPreset.Default => RayReconstructionPreset.TransformerD,
-            RayReconstructionPreset.TransformerD => RayReconstructionPreset.TransformerE,
-            _ => RayReconstructionPreset.Default,
-        };
-    }
-
-    private static Vector2 GetJitter(uint frameIndex) {
-
-        if (!Settings.Quality.EnableDlss) {
-
-            return Vector2.Zero;
-        }
-
-        static float Halton(int index, int b) {
-
-            var result = 0.0f;
-            var fraction = 1.0f / b;
-            var i = index;
-
-            while (i > 0) {
-
-                result += fraction * (i % b);
-                i /= b;
-                fraction /= b;
-            }
-
-            return result;
-        }
-
-        var sequenceIndex = (int)(frameIndex % 1024) + 1;
-        return new Vector2(Halton(sequenceIndex, 2) - 0.5f, Halton(sequenceIndex, 3) - 0.5f);
-    }
-
     private static class OptixNative {
 
         private const string LibraryName = "RayOptixNative";
@@ -701,13 +527,5 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             StringBuilder error,
             int errorCapacity);
 
-        [DllImport(LibraryName, EntryPoint = "roptixGetLastFeatureStatus", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-        [return: MarshalAs(UnmanagedType.I1)]
-        public static extern bool GetLastFeatureStatus(
-            IntPtr handle,
-            StringBuilder status,
-            int statusCapacity,
-            StringBuilder error,
-            int errorCapacity);
     }
 }

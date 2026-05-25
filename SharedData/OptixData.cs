@@ -76,14 +76,7 @@ internal readonly struct OptixRenderSettings(
     float sunDirectionZ,
     float sunIntensity,
     float sunAngularRadius,
-    float ambientIntensity,
-    int enableDlss,
-    int enableRayReconstruction,
-    int enableFrameGeneration,
-    int dlssPerfQuality,
-    int rayReconstructionPreset,
-    float jitterOffsetX,
-    float jitterOffsetY) {
+    float ambientIntensity) {
 
     public readonly int SamplesPerPixel = samplesPerPixel;
     public readonly int MaxBounces = maxBounces;
@@ -109,11 +102,4 @@ internal readonly struct OptixRenderSettings(
     public readonly float SunIntensity = sunIntensity;
     public readonly float SunAngularRadius = sunAngularRadius;
     public readonly float AmbientIntensity = ambientIntensity;
-    public readonly int EnableDlss = enableDlss;
-    public readonly int EnableRayReconstruction = enableRayReconstruction;
-    public readonly int EnableFrameGeneration = enableFrameGeneration;
-    public readonly int DlssPerfQuality = dlssPerfQuality;
-    public readonly int RayReconstructionPreset = rayReconstructionPreset;
-    public readonly float JitterOffsetX = jitterOffsetX;
-    public readonly float JitterOffsetY = jitterOffsetY;
 }
