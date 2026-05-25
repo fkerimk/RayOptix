@@ -19,7 +19,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             public const int RussianRouletteStartBounce = 2;
             public const bool EnableAccumulation = true;
             public static bool EnableDenoiser = true;
-            public static float RenderScale = 0.3f;
+            public static float RenderScale = 1f;
             public const float MinRenderScale = 0.25f;
             public const float MaxRenderScale = 1.0f;
             public const float RenderScaleStep = 0.1f;
