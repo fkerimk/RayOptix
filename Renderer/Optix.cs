@@ -272,9 +272,23 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         initAttempted = true;
 
         var error = new StringBuilder(MaxErrorLength);
-        if (!OptixNative.Create(renderWidth, renderHeight, outputWidth, outputHeight, ref nativeHandle, error, error.Capacity)) {
+        try {
+            if (!OptixNative.Create(renderWidth, renderHeight, outputWidth, outputHeight, ref nativeHandle, error, error.Capacity)) {
 
-            initError = error.ToString();
+                initError = error.ToString();
+                LogErrorOnce(initError);
+            }
+        } catch (DllNotFoundException exception) {
+
+            initError = $"Native OptiX library could not be loaded: {exception.Message}";
+            LogErrorOnce(initError);
+        } catch (BadImageFormatException exception) {
+
+            initError = $"Native OptiX library is not compatible with this runtime: {exception.Message}";
+            LogErrorOnce(initError);
+        } catch (EntryPointNotFoundException exception) {
+
+            initError = $"Native OptiX entry point is missing: {exception.Message}";
             LogErrorOnce(initError);
         }
     }

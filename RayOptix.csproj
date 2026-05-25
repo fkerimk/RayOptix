@@ -12,15 +12,17 @@
     <PackageReference Include="Raylib-cs" Version="7.0.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="native/build/libRayOptixNative.so">
+      <Link>libRayOptixNative.so</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
   <Target Name="BuildNativeOptix" BeforeTargets="BeforeBuild">
     <Exec Command="cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release" />
     <Exec Command="cmake --build native/build -j4" />
-  </Target>
-
-  <Target Name="CopyNativeOptix" AfterTargets="Build">
-    <Copy SourceFiles="native/build/libRayOptixNative.so"
-          DestinationFolder="$(OutDir)"
-          SkipUnchangedFiles="true" />
   </Target>
 
 </Project>
