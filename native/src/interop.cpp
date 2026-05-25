@@ -14,10 +14,12 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <chrono>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -72,6 +74,15 @@ struct NativeMaterial {
     float opacity;
     int reflective;
     float reflectivity;
+};
+
+struct NativeFrameStats {
+    double totalMs;
+    double uploadSceneMs;
+    double launchMs;
+    double denoiseMs;
+    double readbackMs;
+    double toneMapMs;
 };
 
 struct LaunchParams {
@@ -722,7 +733,10 @@ public:
         int materialCount,
         unsigned int frameIndex,
         uint8_t* outputPixels,
-        int outputLength) {
+        int outputLength,
+        NativeFrameStats* stats) {
+        const auto totalStart = std::chrono::steady_clock::now();
+        NativeFrameStats localStats{};
 
         if (vertexFloatCount <= 0 || normalFloatCount != vertexFloatCount || indexCount <= 0 || (indexCount % 3) != 0) {
             throw OptixError("Scene buffers are invalid.");
@@ -739,7 +753,9 @@ public:
             throw OptixError("Output buffer is too small.");
         }
 
+        const auto uploadStart = std::chrono::steady_clock::now();
         UploadScene(vertices, normals, vertexCount, indices, triangleCount, triangleMaterialIndices, materials, static_cast<unsigned int>(materialCount));
+        localStats.uploadSceneMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart).count();
 
         LaunchParams params{};
         params.beauty = reinterpret_cast<float4*>(beautyBuffer_);
@@ -766,6 +782,7 @@ public:
 
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(launchParamsBuffer_), &params, sizeof(params), cudaMemcpyHostToDevice), "cudaMemcpy(launchParams)");
 
+        const auto launchStart = std::chrono::steady_clock::now();
         CheckOptix(optixLaunch(
             pipeline_,
             stream_,
@@ -777,16 +794,22 @@ public:
             1), "optixLaunch");
 
         CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize");
+        localStats.launchMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - launchStart).count();
 
+        const auto denoiseStart = std::chrono::steady_clock::now();
         const CUdeviceptr presentationSource = settings.enableDenoiser != 0
             ? DenoiseBeauty()
             : beautyBuffer_;
+        localStats.denoiseMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - denoiseStart).count();
         const auto presentationSize = static_cast<size_t>(width_) * static_cast<size_t>(height_) * sizeof(float4);
         hostBeautyBuffer_.resize(static_cast<size_t>(width_) * static_cast<size_t>(height_));
+        const auto readbackStart = std::chrono::steady_clock::now();
         CheckCuda(
             cudaMemcpy(hostBeautyBuffer_.data(), reinterpret_cast<void*>(presentationSource), presentationSize, cudaMemcpyDeviceToHost),
             "cudaMemcpy(hostBeautyBuffer)");
+        localStats.readbackMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - readbackStart).count();
 
+        const auto toneMapStart = std::chrono::steady_clock::now();
         ToneMapToPixels(
             hostBeautyBuffer_.data(),
             width_,
@@ -795,6 +818,12 @@ public:
             outputHeight_,
             settings,
             outputPixels);
+        localStats.toneMapMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - toneMapStart).count();
+        localStats.totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - totalStart).count();
+
+        if (stats != nullptr) {
+            *stats = localStats;
+        }
     }
 
 private:
@@ -1306,25 +1335,71 @@ private:
         uint8_t* outputPixels) {
         const float exposure = std::max(settings.exposure, 0.001f);
         const float gamma = std::max(settings.gamma, 0.001f);
+        constexpr int lutSize = 4096;
+        const float inverseGamma = 1.0f / gamma;
+
+        std::array<uint8_t, lutSize + 1> tonemapLut{};
+        for (int index = 0; index <= lutSize; ++index) {
+            const float normalized = static_cast<float>(index) / static_cast<float>(lutSize);
+            const float corrected = std::pow(normalized, inverseGamma);
+            tonemapLut[static_cast<size_t>(index)] = static_cast<uint8_t>(std::clamp(corrected * 255.0f, 0.0f, 255.0f));
+        }
+
+        std::vector<int> sourceXLookup(static_cast<size_t>(outputWidth));
+        std::vector<int> sourceRowLookup(static_cast<size_t>(outputHeight));
+
+        for (int x = 0; x < outputWidth; ++x) {
+            sourceXLookup[static_cast<size_t>(x)] = std::clamp(x * sourceWidth / std::max(outputWidth, 1), 0, std::max(sourceWidth - 1, 0));
+        }
 
         for (int y = 0; y < outputHeight; ++y) {
-            for (int x = 0; x < outputWidth; ++x) {
-                const int sourceX = std::clamp(x * sourceWidth / std::max(outputWidth, 1), 0, std::max(sourceWidth - 1, 0));
-                const int sourceY = std::clamp(y * sourceHeight / std::max(outputHeight, 1), 0, std::max(sourceHeight - 1, 0));
-                const auto& source = hdrPixels[sourceY * sourceWidth + sourceX];
-                const size_t outputIndex = static_cast<size_t>((y * outputWidth + x) * 4);
+            const int sourceY = std::clamp(y * sourceHeight / std::max(outputHeight, 1), 0, std::max(sourceHeight - 1, 0));
+            sourceRowLookup[static_cast<size_t>(y)] = sourceY * sourceWidth;
+        }
 
-                auto tonemapChannel = [exposure, gamma](float value) -> uint8_t {
-                    const float exposed = std::clamp(value * exposure, 0.0f, 1.0f);
-                    const float corrected = std::pow(exposed, 1.0f / gamma);
-                    return static_cast<uint8_t>(std::clamp(corrected * 255.0f, 0.0f, 255.0f));
-                };
+        const auto tonemapChannel = [&](float value) -> uint8_t {
+            const float exposed = std::clamp(value * exposure, 0.0f, 1.0f);
+            const int lutIndex = std::clamp(static_cast<int>(exposed * static_cast<float>(lutSize) + 0.5f), 0, lutSize);
+            return tonemapLut[static_cast<size_t>(lutIndex)];
+        };
 
-                outputPixels[outputIndex + 0] = tonemapChannel(source.x);
-                outputPixels[outputIndex + 1] = tonemapChannel(source.y);
-                outputPixels[outputIndex + 2] = tonemapChannel(source.z);
-                outputPixels[outputIndex + 3] = 255;
+        const unsigned int workerCount = std::max(1u, std::min(
+            std::thread::hardware_concurrency() == 0 ? 1u : std::thread::hardware_concurrency(),
+            static_cast<unsigned int>(std::max(outputHeight, 1))));
+
+        std::vector<std::thread> workers;
+        workers.reserve(workerCount > 0 ? workerCount - 1 : 0);
+
+        const auto processRows = [&](int rowStart, int rowEnd) {
+            for (int y = rowStart; y < rowEnd; ++y) {
+                const int sourceRow = sourceRowLookup[static_cast<size_t>(y)];
+                const size_t outputRow = static_cast<size_t>(y * outputWidth) * 4;
+
+                for (int x = 0; x < outputWidth; ++x) {
+                    const auto& source = hdrPixels[sourceRow + sourceXLookup[static_cast<size_t>(x)]];
+                    const size_t outputIndex = outputRow + static_cast<size_t>(x) * 4;
+
+                    outputPixels[outputIndex + 0] = tonemapChannel(source.x);
+                    outputPixels[outputIndex + 1] = tonemapChannel(source.y);
+                    outputPixels[outputIndex + 2] = tonemapChannel(source.z);
+                    outputPixels[outputIndex + 3] = 255;
+                }
             }
+        };
+
+        const int rowsPerWorker = std::max(1, outputHeight / static_cast<int>(workerCount));
+        int rowStart = 0;
+
+        for (unsigned int workerIndex = 1; workerIndex < workerCount; ++workerIndex) {
+            const int rowEnd = std::min(outputHeight, rowStart + rowsPerWorker);
+            workers.emplace_back(processRows, rowStart, rowEnd);
+            rowStart = rowEnd;
+        }
+
+        processRows(rowStart, outputHeight);
+
+        for (auto& worker : workers) {
+            worker.join();
         }
     }
 
@@ -1454,6 +1529,7 @@ extern "C" bool roptixRender(
     unsigned int frameIndex,
     uint8_t* outputPixels,
     int outputLength,
+    NativeFrameStats* stats,
     char* error,
     int errorCapacity) {
     try {
@@ -1478,7 +1554,8 @@ extern "C" bool roptixRender(
             materialCount,
             frameIndex,
             outputPixels,
-            outputLength);
+            outputLength,
+            stats);
         CopyError(error, errorCapacity, "");
         return true;
     } catch (const std::exception& exception) {

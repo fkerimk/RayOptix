@@ -40,6 +40,17 @@ internal sealed class OptixScene(
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal struct OptixFrameStats {
+
+    public double TotalMs;
+    public double UploadSceneMs;
+    public double LaunchMs;
+    public double DenoiseMs;
+    public double ReadbackMs;
+    public double ToneMapMs;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal readonly struct OptixCamera(float positionX, float positionY, float positionZ, float targetX, float targetY, float targetZ, float fovY) {
 
     public readonly float PositionX = positionX;

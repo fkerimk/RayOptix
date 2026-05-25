@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Diagnostics;
 using Raylib_cs;
 using static Raylib_cs.Raylib;
 
@@ -72,6 +73,9 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private string? initError;
     private bool initAttempted;
     private string? lastLoggedError;
+    private OptixFrameStats lastFrameStats;
+    private double lastInteropMs;
+    private double lastTextureUploadMs;
 
     public override string Name => initError is null ? "OptiX" : "OptiX (Unavailable)";
 
@@ -127,6 +131,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         ResetAccumulationIfNeeded(camera, sceneSignature, settings);
         var scene = BuildSceneGeometry();
 
+        var interopStopwatch = Stopwatch.StartNew();
         if (!OptixNative.Render(nativeHandle,
                 renderWidth,
                 renderHeight,
@@ -147,15 +152,22 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
                 frameIndex++,
                 pixels,
                 pixels.Length,
+                ref lastFrameStats,
                 error,
                 error.Capacity)) {
+
+            interopStopwatch.Stop();
+            lastInteropMs = interopStopwatch.Elapsed.TotalMilliseconds;
 
             initError = error.ToString();
             LogErrorOnce(initError);
             DrawUnavailable();
             return;
         }
+        interopStopwatch.Stop();
+        lastInteropMs = interopStopwatch.Elapsed.TotalMilliseconds;
 
+        var textureUploadStopwatch = Stopwatch.StartNew();
         unsafe {
 
             fixed (byte* pixelPtr = pixels) {
@@ -163,6 +175,8 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
                 UpdateTexture(texture, pixelPtr);
             }
         }
+        textureUploadStopwatch.Stop();
+        lastTextureUploadMs = textureUploadStopwatch.Elapsed.TotalMilliseconds;
 
         DrawTexturePro(
             texture,
@@ -328,6 +342,11 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         DrawText($"F3 Hard Shadows: {(Settings.Shadows.EnableHardShadows ? "ON" : "OFF")}", 10, 104, 20, Color.DarkBlue);
         DrawText($"F4 Denoiser: {(Settings.Quality.EnableDenoiser ? "ON" : "OFF")}", 10, 128, 20, Color.DarkBlue);
         DrawText($"F5/F6 Render Scale: {Settings.Quality.RenderScale:0.00}x", 10, 152, 20, Color.DarkBlue);
+        DrawText($"Interop: {lastInteropMs:0.0} ms", 10, 176, 20, Color.Maroon);
+        DrawText($"Native Total: {lastFrameStats.TotalMs:0.0} ms", 10, 200, 20, Color.Maroon);
+        DrawText($"Upload/Launch: {lastFrameStats.UploadSceneMs:0.0} / {lastFrameStats.LaunchMs:0.0} ms", 10, 224, 20, Color.Maroon);
+        DrawText($"Denoise/Readback: {lastFrameStats.DenoiseMs:0.0} / {lastFrameStats.ReadbackMs:0.0} ms", 10, 248, 20, Color.Maroon);
+        DrawText($"ToneMap/Texture: {lastFrameStats.ToneMapMs:0.0} / {lastTextureUploadMs:0.0} ms", 10, 272, 20, Color.Maroon);
     }
 
     private void LogErrorOnce(string? error) {
@@ -524,6 +543,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             uint frameIndex,
             byte[] outputPixels,
             int outputLength,
+            ref OptixFrameStats stats,
             StringBuilder error,
             int errorCapacity);
 
