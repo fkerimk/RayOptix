@@ -45,8 +45,8 @@ struct NativeMaterial {
     float albedoG;
     float albedoB;
     float opacity;
-    int reflective;
     float reflectivity;
+    int albedoTextureIndex;
 };
 
 struct NativeFrameStats {
@@ -75,12 +75,20 @@ bool RenderRendererHandle(
     int vertexFloatCount,
     const float* normals,
     int normalFloatCount,
+    const float* texCoords,
+    int texCoordFloatCount,
     const uint16_t* indices,
     int indexCount,
     const uint32_t* triangleMaterialIndices,
     int triangleMaterialIndexCount,
-    const NativeMaterial* materials,
-    int materialCount,
+    const float* materialParameters,
+    int materialFloatCount,
+    const int32_t* materialAlbedoTextureIndices,
+    int materialTextureIndexCount,
+    const uint8_t* texturePixels,
+    int texturePixelByteCount,
+    const int32_t* textureMetadata,
+    int textureMetadataCount,
     unsigned int frameIndex,
     unsigned int outputTextureId,
     NativeFrameStats* stats,

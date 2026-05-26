@@ -54,6 +54,9 @@ struct LaunchParams {
     float4* diffuseAlbedo;
     float4* specularAlbedo;
     CUdeviceptr materials;
+    CUdeviceptr texturePixels;
+    CUdeviceptr textureMetadata;
+    unsigned int textureCount;
     unsigned int imageWidth;
     unsigned int imageHeight;
     Float3 cameraPosition;
@@ -75,6 +78,7 @@ struct MissData {
 struct HitGroupData {
     CUdeviceptr vertices;
     CUdeviceptr normals;
+    CUdeviceptr texCoords;
     CUdeviceptr indices;
     CUdeviceptr triangleMaterialIndices;
     CUdeviceptr materials;
@@ -297,25 +301,38 @@ public:
         int vertexFloatCount,
         const float* normals,
         int normalFloatCount,
+        const float* texCoords,
+        int texCoordFloatCount,
         const uint16_t* indices,
         int indexCount,
         const uint32_t* triangleMaterialIndices,
         int triangleMaterialIndexCount,
-        const NativeMaterial* materials,
-        int materialCount,
+        const float* materialParameters,
+        int materialFloatCount,
+        const int32_t* materialAlbedoTextureIndices,
+        int materialTextureIndexCount,
+        const uint8_t* texturePixels,
+        int texturePixelByteCount,
+        const int32_t* textureMetadata,
+        int textureMetadataCount,
         unsigned int frameIndex,
         unsigned int outputTextureId,
         NativeFrameStats* stats) {
         const auto totalStart = std::chrono::steady_clock::now();
         NativeFrameStats localStats{};
 
-        if (vertexFloatCount <= 0 || normalFloatCount != vertexFloatCount || indexCount <= 0 || (indexCount % 3) != 0) {
+        if (vertexFloatCount <= 0 || normalFloatCount != vertexFloatCount || texCoordFloatCount != (vertexFloatCount / 3) * 2 || indexCount <= 0 || (indexCount % 3) != 0) {
             throw OptixError("Scene buffers are invalid.");
         }
 
         const auto vertexCount = static_cast<unsigned int>(vertexFloatCount / 3);
         const auto triangleCount = static_cast<unsigned int>(indexCount / 3);
-        if (triangleMaterialIndexCount != static_cast<int>(triangleCount) || materialCount <= 0) {
+        if (triangleMaterialIndexCount != static_cast<int>(triangleCount) ||
+            materialFloatCount <= 0 ||
+            (materialFloatCount % 5) != 0 ||
+            materialTextureIndexCount != (materialFloatCount / 5) ||
+            (texturePixelByteCount % 4) != 0 ||
+            (textureMetadataCount % 3) != 0) {
             throw OptixError("Scene material buffers are invalid.");
         }
         if (outputTextureId == 0) {
@@ -325,7 +342,21 @@ public:
         EnsureOutputTextureInterop(outputTextureId);
 
         const auto uploadStart = std::chrono::steady_clock::now();
-        UploadScene(vertices, normals, vertexCount, indices, triangleCount, triangleMaterialIndices, materials, static_cast<unsigned int>(materialCount));
+        UploadScene(
+            vertices,
+            normals,
+            texCoords,
+            vertexCount,
+            indices,
+            triangleCount,
+            triangleMaterialIndices,
+            materialParameters,
+            static_cast<unsigned int>(materialFloatCount / 5),
+            materialAlbedoTextureIndices,
+            texturePixels,
+            static_cast<unsigned int>(texturePixelByteCount / 4),
+            textureMetadata,
+            static_cast<unsigned int>(textureMetadataCount / 3));
         localStats.uploadSceneMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart).count();
 
         LaunchParams params{};
@@ -338,6 +369,9 @@ public:
         params.diffuseAlbedo = reinterpret_cast<float4*>(diffuseAlbedoGuideBuffer_);
         params.specularAlbedo = reinterpret_cast<float4*>(specularAlbedoGuideBuffer_);
         params.materials = materialBuffer_;
+        params.texturePixels = texturePixelBuffer_;
+        params.textureMetadata = textureMetadataBuffer_;
+        params.textureCount = static_cast<unsigned int>(textureMetadataCount / 3);
         params.imageWidth = static_cast<unsigned int>(width_);
         params.imageHeight = static_cast<unsigned int>(height_);
         params.cameraPosition = Float3{camera.positionX, camera.positionY, camera.positionZ};
@@ -809,29 +843,61 @@ private:
     void UploadScene(
         const float* vertices,
         const float* normals,
+        const float* texCoords,
         unsigned int vertexCount,
         const uint16_t* indices,
         unsigned int triangleCount,
         const uint32_t* triangleMaterialIndices,
-        const NativeMaterial* materials,
-        unsigned int materialCount) {
+        const float* materialParameters,
+        unsigned int materialCount,
+        const int32_t* materialAlbedoTextureIndices,
+        const uint8_t* texturePixels,
+        unsigned int texturePixelCount,
+        const int32_t* textureMetadata,
+        unsigned int textureCount) {
         const auto vertexBytes = static_cast<size_t>(vertexCount) * sizeof(float3);
         const auto normalBytes = static_cast<size_t>(vertexCount) * sizeof(float3);
+        const auto texCoordBytes = static_cast<size_t>(vertexCount) * sizeof(float2);
         const auto indexBytes = static_cast<size_t>(triangleCount) * sizeof(TriangleIndices);
         const auto triangleMaterialIndexBytes = static_cast<size_t>(triangleCount) * sizeof(uint32_t);
         const auto materialBytes = static_cast<size_t>(materialCount) * sizeof(NativeMaterial);
+        const auto texturePixelBytes = static_cast<size_t>(texturePixelCount) * sizeof(uchar4);
+        const auto textureMetadataBytes = static_cast<size_t>(textureCount) * 3 * sizeof(int32_t);
+
+        std::vector<NativeMaterial> materials(materialCount);
+        for (unsigned int materialIndex = 0; materialIndex < materialCount; ++materialIndex) {
+            const auto parameterOffset = materialIndex * 5;
+            materials[materialIndex] = NativeMaterial{
+                materialParameters[parameterOffset],
+                materialParameters[parameterOffset + 1],
+                materialParameters[parameterOffset + 2],
+                materialParameters[parameterOffset + 3],
+                materialParameters[parameterOffset + 4],
+                materialAlbedoTextureIndices[materialIndex]
+            };
+        }
 
         EnsureBuffer(vertexBuffer_, vertexBufferCapacity_, vertexBytes);
         EnsureBuffer(normalBuffer_, normalBufferCapacity_, normalBytes);
+        EnsureBuffer(texCoordBuffer_, texCoordBufferCapacity_, texCoordBytes);
         EnsureBuffer(indexBuffer_, indexBufferCapacity_, indexBytes);
         EnsureBuffer(triangleMaterialIndexBuffer_, triangleMaterialIndexCapacity_, triangleMaterialIndexBytes);
         EnsureBuffer(materialBuffer_, materialBufferCapacity_, materialBytes);
+        EnsureBuffer(texturePixelBuffer_, texturePixelBufferCapacity_, texturePixelBytes);
+        EnsureBuffer(textureMetadataBuffer_, textureMetadataBufferCapacity_, textureMetadataBytes);
 
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(vertexBuffer_), vertices, vertexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(vertices)");
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(normalBuffer_), normals, normalBytes, cudaMemcpyHostToDevice), "cudaMemcpy(normals)");
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(texCoordBuffer_), texCoords, texCoordBytes, cudaMemcpyHostToDevice), "cudaMemcpy(texCoords)");
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(indexBuffer_), indices, indexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(indices)");
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(triangleMaterialIndexBuffer_), triangleMaterialIndices, triangleMaterialIndexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(triangleMaterialIndices)");
-        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(materialBuffer_), materials, materialBytes, cudaMemcpyHostToDevice), "cudaMemcpy(materials)");
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(materialBuffer_), materials.data(), materialBytes, cudaMemcpyHostToDevice), "cudaMemcpy(materials)");
+        if (texturePixelBytes > 0) {
+            CheckCuda(cudaMemcpy(reinterpret_cast<void*>(texturePixelBuffer_), texturePixels, texturePixelBytes, cudaMemcpyHostToDevice), "cudaMemcpy(texturePixels)");
+        }
+        if (textureMetadataBytes > 0) {
+            CheckCuda(cudaMemcpy(reinterpret_cast<void*>(textureMetadataBuffer_), textureMetadata, textureMetadataBytes, cudaMemcpyHostToDevice), "cudaMemcpy(textureMetadata)");
+        }
 
         const uint32_t flags[] = {OPTIX_GEOMETRY_FLAG_NONE};
 
@@ -876,6 +942,7 @@ private:
         CheckOptix(optixSbtRecordPackHeader(hitgroupProgramGroup_, &hitRecord), "optixSbtRecordPackHeader(hitgroup-update)");
         hitRecord.data.vertices = vertexBuffer_;
         hitRecord.data.normals = normalBuffer_;
+        hitRecord.data.texCoords = texCoordBuffer_;
         hitRecord.data.indices = indexBuffer_;
         hitRecord.data.triangleMaterialIndices = triangleMaterialIndexBuffer_;
         hitRecord.data.materials = materialBuffer_;
@@ -983,9 +1050,12 @@ private:
         SafeCudaFree(hitgroupRecordBuffer_);
         SafeCudaFree(vertexBuffer_);
         SafeCudaFree(normalBuffer_);
+        SafeCudaFree(texCoordBuffer_);
         SafeCudaFree(indexBuffer_);
         SafeCudaFree(triangleMaterialIndexBuffer_);
         SafeCudaFree(materialBuffer_);
+        SafeCudaFree(texturePixelBuffer_);
+        SafeCudaFree(textureMetadataBuffer_);
         SafeCudaFree(denoiserStateBuffer_);
         SafeCudaFree(denoiserScratchBuffer_);
         SafeCudaFree(gasScratchBuffer_);
@@ -1205,9 +1275,12 @@ private:
 
     CUdeviceptr vertexBuffer_ = 0;
     CUdeviceptr normalBuffer_ = 0;
+    CUdeviceptr texCoordBuffer_ = 0;
     CUdeviceptr indexBuffer_ = 0;
     CUdeviceptr triangleMaterialIndexBuffer_ = 0;
     CUdeviceptr materialBuffer_ = 0;
+    CUdeviceptr texturePixelBuffer_ = 0;
+    CUdeviceptr textureMetadataBuffer_ = 0;
     CUdeviceptr denoiserStateBuffer_ = 0;
     CUdeviceptr denoiserScratchBuffer_ = 0;
     CUdeviceptr gasScratchBuffer_ = 0;
@@ -1217,9 +1290,12 @@ private:
 
     size_t vertexBufferCapacity_ = 0;
     size_t normalBufferCapacity_ = 0;
+    size_t texCoordBufferCapacity_ = 0;
     size_t indexBufferCapacity_ = 0;
     size_t triangleMaterialIndexCapacity_ = 0;
     size_t materialBufferCapacity_ = 0;
+    size_t texturePixelBufferCapacity_ = 0;
+    size_t textureMetadataBufferCapacity_ = 0;
     size_t denoiserStateCapacity_ = 0;
     size_t denoiserScratchCapacity_ = 0;
     size_t gasScratchCapacity_ = 0;
@@ -1302,12 +1378,20 @@ bool RenderRendererHandle(
     int vertexFloatCount,
     const float* normals,
     int normalFloatCount,
+    const float* texCoords,
+    int texCoordFloatCount,
     const uint16_t* indices,
     int indexCount,
     const uint32_t* triangleMaterialIndices,
     int triangleMaterialIndexCount,
-    const NativeMaterial* materials,
-    int materialCount,
+    const float* materialParameters,
+    int materialFloatCount,
+    const int32_t* materialAlbedoTextureIndices,
+    int materialTextureIndexCount,
+    const uint8_t* texturePixels,
+    int texturePixelByteCount,
+    const int32_t* textureMetadata,
+    int textureMetadataCount,
     unsigned int frameIndex,
     unsigned int outputTextureId,
     NativeFrameStats* stats,
@@ -1327,12 +1411,20 @@ bool RenderRendererHandle(
             vertexFloatCount,
             normals,
             normalFloatCount,
+            texCoords,
+            texCoordFloatCount,
             indices,
             indexCount,
             triangleMaterialIndices,
             triangleMaterialIndexCount,
-            materials,
-            materialCount,
+            materialParameters,
+            materialFloatCount,
+            materialAlbedoTextureIndices,
+            materialTextureIndexCount,
+            texturePixels,
+            texturePixelByteCount,
+            textureMetadata,
+            textureMetadataCount,
             frameIndex,
             outputTextureId,
             stats);

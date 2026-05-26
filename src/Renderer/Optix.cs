@@ -17,7 +17,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             public const int MaxBounces = 4;
             public const int MinBounces = 1;
             public const int RussianRouletteStartBounce = 2;
-            public const bool EnableAccumulation = true;
+            public const bool EnableAccumulation = false;
             public static bool EnableDenoiser = true;
             public static int DenoiserIntervalFrames = 1;
             public const int MinDenoiserIntervalFrames = 1;
@@ -154,12 +154,20 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
                 scene.Vertices.Length,
                 scene.Normals,
                 scene.Normals.Length,
+                scene.TexCoords,
+                scene.TexCoords.Length,
                 scene.Indices,
                 scene.Indices.Length,
                 scene.TriangleMaterialIndices,
                 scene.TriangleMaterialIndices.Length,
-                scene.Materials,
-                scene.Materials.Length,
+                scene.MaterialParameters,
+                scene.MaterialParameters.Length,
+                scene.MaterialAlbedoTextureIndices,
+                scene.MaterialAlbedoTextureIndices.Length,
+                scene.TexturePixels,
+                scene.TexturePixels.Length,
+                scene.TextureMetadata,
+                scene.TextureMetadata.Length,
                 frameIndex++,
                 texture.Id,
                 ref lastFrameStats,
@@ -402,29 +410,30 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
         var vertices = new List<float>();
         var normals = new List<float>();
+        var texCoords = new List<float>();
         var indices = new List<ushort>();
         var triangleMaterialIndices = new List<uint>();
-        var materials = new List<OptixMaterial>();
+        var materialParameters = new List<float>();
+        var materialAlbedoTextureIndices = new List<int>();
+        var texturePixels = new List<byte>();
+        var textureMetadata = new List<int>();
+        var materialLookup = new Dictionary<MaterialData, uint>(ReferenceEqualityComparer.Instance);
+        var textureLookup = new Dictionary<TextureData, int>(ReferenceEqualityComparer.Instance);
 
         foreach (var drawCall in drawCalls) {
-
             var geometry = drawCall.meshData.CreateOptixGeometry(drawCall.matrix);
             var vertexOffset = vertices.Count / 3;
-            var material = drawCall.materialData.OptixMaterialData
-                           ?? throw new InvalidOperationException("OptiX material data has not been built.");
-            var materialIndex = (uint)materials.Count;
+            var materialIndex = GetOrAddMaterial(drawCall.materialData);
 
             vertices.AddRange(geometry.Vertices);
             normals.AddRange(geometry.Normals);
-            materials.Add(material);
+            texCoords.AddRange(geometry.TexCoords);
 
             for (var index = 0; index < geometry.Indices.Length; index++) {
-
                 indices.Add((ushort)(geometry.Indices[index] + vertexOffset));
             }
 
             for (var triangleIndex = 0; triangleIndex < geometry.Indices.Length / 3; triangleIndex++) {
-
                 triangleMaterialIndices.Add(materialIndex);
             }
         }
@@ -432,9 +441,54 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         return new OptixScene(
             vertices.ToArray(),
             normals.ToArray(),
+            texCoords.ToArray(),
             indices.ToArray(),
             triangleMaterialIndices.ToArray(),
-            materials.ToArray());
+            materialParameters.ToArray(),
+            materialAlbedoTextureIndices.ToArray(),
+            texturePixels.ToArray(),
+            textureMetadata.ToArray());
+
+        uint GetOrAddMaterial(MaterialData materialData) {
+
+            if (materialLookup.TryGetValue(materialData, out var existingIndex)) {
+                return existingIndex;
+            }
+
+            var materialIndex = (uint)materialAlbedoTextureIndices.Count;
+            materialLookup[materialData] = materialIndex;
+
+            materialParameters.Add(materialData.Color.X);
+            materialParameters.Add(materialData.Color.Y);
+            materialParameters.Add(materialData.Color.Z);
+            materialParameters.Add(materialData.Color.W);
+            materialParameters.Add(materialData.Reflectivity);
+            materialAlbedoTextureIndices.Add(GetOrAddTexture(materialData.GetTexture(MaterialMapIndex.Albedo)));
+            return materialIndex;
+        }
+
+        int GetOrAddTexture(TextureData? textureData) {
+
+            if (textureData?.OptixPixels == null ||
+                textureData.OptixPixels.Length == 0 ||
+                textureData.OptixWidth <= 0 ||
+                textureData.OptixHeight <= 0) {
+
+                return -1;
+            }
+
+            if (textureLookup.TryGetValue(textureData, out var existingIndex)) {
+                return existingIndex;
+            }
+
+            var textureIndex = textureMetadata.Count / 3;
+            textureLookup[textureData] = textureIndex;
+            textureMetadata.Add(texturePixels.Count / 4);
+            textureMetadata.Add(textureData.OptixWidth);
+            textureMetadata.Add(textureData.OptixHeight);
+            texturePixels.AddRange(textureData.OptixPixels);
+            return textureIndex;
+        }
     }
 
     private static OptixRenderSettings BuildSettings(uint frameIndex) {
@@ -576,12 +630,20 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             int vertexFloatCount,
             float[] normals,
             int normalFloatCount,
+            float[] texCoords,
+            int texCoordFloatCount,
             ushort[] indices,
             int indexCount,
             uint[] triangleMaterialIndices,
             int triangleMaterialIndexCount,
-            OptixMaterial[] materials,
-            int materialCount,
+            float[] materialParameters,
+            int materialFloatCount,
+            int[] materialAlbedoTextureIndices,
+            int materialTextureIndexCount,
+            byte[] texturePixels,
+            int texturePixelByteCount,
+            int[] textureMetadata,
+            int textureMetadataCount,
             uint frameIndex,
             uint outputTextureId,
             ref OptixFrameStats stats,

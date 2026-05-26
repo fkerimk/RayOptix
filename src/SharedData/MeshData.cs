@@ -22,8 +22,6 @@ internal class MeshData : SharedData {
 
     public Material? FallbackMaterial;
     public Mesh? RaylibMesh;
-    public OptixMesh? OptixMeshData;
-
     public MeshData(int vertexCount, int triangleCount, float[] vertices, float[] normals, float[] texCoords, ushort[] indices) {
 
         VertexCount = vertexCount;
@@ -104,14 +102,9 @@ internal class MeshData : SharedData {
     }
 
     protected override void BuildOptix() {
-
-        UnloadOptix();
-        OptixMeshData = new OptixMesh(Vertices, Normals, Indices);
     }
 
     protected override void UnloadOptix() {
-
-        OptixMeshData = null;
     }
 
     public void UploadAnimatedGeometry() {
@@ -145,12 +138,9 @@ internal class MeshData : SharedData {
 
     public OptixGeometry CreateOptixGeometry(Matrix4x4 matrix) {
 
-        if (OptixMeshData is null) {
-            throw new InvalidOperationException("OptiX mesh data has not been built.");
-        }
-
         var geometryVertices = new float[Vertices.Length];
         var geometryNormals = new float[Normals.Length];
+        var geometryTexCoords = new float[TexCoords.Length];
         var normalMatrix = matrix;
         normalMatrix.M41 = 0;
         normalMatrix.M42 = 0;
@@ -176,6 +166,8 @@ internal class MeshData : SharedData {
             geometryNormals[index + 2] = normal.Z;
         }
 
-        return new OptixGeometry(geometryVertices, geometryNormals, Indices);
+        Array.Copy(TexCoords, geometryTexCoords, TexCoords.Length);
+
+        return new OptixGeometry(geometryVertices, geometryNormals, geometryTexCoords, Indices);
     }
 }

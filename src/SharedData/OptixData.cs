@@ -1,42 +1,33 @@
 using System.Runtime.InteropServices;
 
-internal sealed class OptixMesh(float[] vertices, float[] normals, ushort[] indices) {
+internal sealed class OptixGeometry(float[] vertices, float[] normals, float[] texCoords, ushort[] indices) {
 
     public readonly float[] Vertices = vertices;
     public readonly float[] Normals = normals;
+    public readonly float[] TexCoords = texCoords;
     public readonly ushort[] Indices = indices;
-}
-
-internal sealed class OptixGeometry(float[] vertices, float[] normals, ushort[] indices) {
-
-    public readonly float[] Vertices = vertices;
-    public readonly float[] Normals = normals;
-    public readonly ushort[] Indices = indices;
-}
-
-[StructLayout(LayoutKind.Sequential)]
-internal readonly struct OptixMaterial(float albedoR, float albedoG, float albedoB, float opacity, int reflective, float reflectivity) {
-
-    public readonly float AlbedoR = albedoR;
-    public readonly float AlbedoG = albedoG;
-    public readonly float AlbedoB = albedoB;
-    public readonly float Opacity = opacity;
-    public readonly int Reflective = reflective;
-    public readonly float Reflectivity = reflectivity;
 }
 
 internal sealed class OptixScene(
     float[] vertices,
     float[] normals,
+    float[] texCoords,
     ushort[] indices,
     uint[] triangleMaterialIndices,
-    OptixMaterial[] materials) {
+    float[] materialParameters,
+    int[] materialAlbedoTextureIndices,
+    byte[] texturePixels,
+    int[] textureMetadata) {
 
     public readonly float[] Vertices = vertices;
     public readonly float[] Normals = normals;
+    public readonly float[] TexCoords = texCoords;
     public readonly ushort[] Indices = indices;
     public readonly uint[] TriangleMaterialIndices = triangleMaterialIndices;
-    public readonly OptixMaterial[] Materials = materials;
+    public readonly float[] MaterialParameters = materialParameters;
+    public readonly int[] MaterialAlbedoTextureIndices = materialAlbedoTextureIndices;
+    public readonly byte[] TexturePixels = texturePixels;
+    public readonly int[] TextureMetadata = textureMetadata;
 }
 
 [StructLayout(LayoutKind.Sequential)]

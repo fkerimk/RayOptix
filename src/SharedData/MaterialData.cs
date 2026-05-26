@@ -9,7 +9,6 @@ internal unsafe class MaterialData : SharedData {
     public readonly Dictionary<MaterialMapIndex, TextureData> Textures = [];
     
     public Material? RaylibMaterial;
-    public OptixMaterial? OptixMaterialData;
 
     protected override void BuildRaylib() {
 
@@ -51,20 +50,14 @@ internal unsafe class MaterialData : SharedData {
     }
 
     protected override void BuildOptix() {
-
-        UnloadOptix();
-        OptixMaterialData = new OptixMaterial(
-            Color.X,
-            Color.Y,
-            Color.Z,
-            Color.W,
-            Reflectivity > 0 ? 1 : 0,
-            Reflectivity);
     }
 
     protected override void UnloadOptix() {
+    }
 
-        OptixMaterialData = null;
+    public TextureData? GetTexture(MaterialMapIndex mapIndex) {
+
+        return Textures.GetValueOrDefault(mapIndex);
     }
 
     private static Color ToColor(Vector4 color) {
