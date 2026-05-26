@@ -2,7 +2,7 @@ using System.Numerics;
 
 internal abstract class Renderer {
 
-    public abstract string name { get; }
+    public abstract string Name { get; }
     
     public abstract void Init();
     public abstract void Begin();

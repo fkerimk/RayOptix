@@ -7,7 +7,6 @@
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <InvariantGlobalization>true</InvariantGlobalization>
-        <UseSharedCompilation>false</UseSharedCompilation>
         <DefaultItemExcludes>$bin/**;obj/**;external/**;native/build/**</DefaultItemExcludes>
     </PropertyGroup>
 
@@ -15,13 +14,5 @@
         <PackageReference Include="Raylib-cs" Version="8.0.0" />
         <PackageReference Include="AssimpNetter" Version="6.0.4" />
     </ItemGroup>
-
-    <Target Name="CopyNativeOptixLibrary" AfterTargets="Build" Condition="'$(OS)' != 'Windows_NT'">
-        <Copy
-            SourceFiles="$(MSBuildProjectDirectory)/native/build/Debug/linux-x64/RayOptixNative.so"
-            DestinationFiles="$(TargetDir)RayOptixNative.so"
-            SkipUnchangedFiles="true"
-            Condition="Exists('$(MSBuildProjectDirectory)/native/build/Debug/linux-x64/RayOptixNative.so')" />
-    </Target>
 
 </Project>

@@ -17,7 +17,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             public const int MaxBounces = 4;
             public const int MinBounces = 1;
             public const int RussianRouletteStartBounce = 2;
-            public const bool EnableAccumulation = false;
+            public const bool EnableAccumulation = true;
             public static bool EnableDenoiser = true;
             public static int DenoiserIntervalFrames = 1;
             public const int MinDenoiserIntervalFrames = 1;
@@ -52,56 +52,56 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         }
 
         public static class Debug {
-            public static bool EnableNormalDebug = false;
+            public static bool EnableNormalDebug;
             public static bool LogNativeErrors = true;
         }
     }
 
-    private readonly List<DrawCall> drawCalls = [];
+    private readonly List<DrawCall> _drawCalls = [];
 
-    private IntPtr nativeHandle;
-    private Texture2D texture;
-    private int renderWidth;
-    private int renderHeight;
-    private int outputWidth;
-    private int outputHeight;
-    private uint frameIndex;
-    private OptixCamera? previousCamera;
-    private int previousSceneSignature;
-    private string? initError;
-    private bool initAttempted;
-    private string? lastLoggedError;
-    private OptixFrameStats lastFrameStats;
-    private double lastInteropMs;
-    private double lastTextureUploadMs;
-    private int lastSceneMaterialCount;
-    private int lastSceneTexturedMaterialCount;
-    private int lastSceneTextureCount;
-    private Vector4 lastSceneUvRange;
+    private IntPtr _nativeHandle;
+    private Texture2D _texture;
+    private int _renderWidth;
+    private int _renderHeight;
+    private int _outputWidth;
+    private int _outputHeight;
+    private uint _frameIndex;
+    private OptixCamera? _previousCamera;
+    private int _previousSceneSignature;
+    private string? _initError;
+    private bool _initAttempted;
+    private string? _lastLoggedError;
+    private OptixFrameStats _lastFrameStats;
+    private double _lastInteropMs;
+    private double _lastTextureUploadMs;
+    private int _lastSceneMaterialCount;
+    private int _lastSceneTexturedMaterialCount;
+    private int _lastSceneTextureCount;
+    private Vector4 _lastSceneUvRange;
 
-    private readonly Dictionary<MeshData, int> uploadedMeshIds = new(ReferenceEqualityComparer.Instance);
-    private int nextMeshId = 1;
+    private readonly Dictionary<MeshData, int> _uploadedMeshIds = new(ReferenceEqualityComparer.Instance);
+    private int _nextMeshId = 1;
 
-    public override string name => initError is null ? "OptiX" : "OptiX (Unavailable)";
+    public override string Name => _initError is null ? "OptiX" : "OptiX (Unavailable)";
 
     public override void Init() {
 
-        (renderWidth, renderHeight) = GetRenderDimensions();
-        (outputWidth, outputHeight) = GetOutputDimensions();
+        (_renderWidth, _renderHeight) = GetRenderDimensions();
+        (_outputWidth, _outputHeight) = GetOutputDimensions();
 
-        var image = GenImageColor(outputWidth, outputHeight, Color.Black);
-        texture = LoadTextureFromImage(image);
+        var image = GenImageColor(_outputWidth, _outputHeight, Color.Black);
+        _texture = LoadTextureFromImage(image);
         UnloadImage(image);
     }
 
     public override void Begin() {
 
-        drawCalls.Clear();
+        _drawCalls.Clear();
     }
 
     public override void DrawMesh(MeshData meshData, MaterialData materialData, Matrix4x4 matrix) {
 
-        drawCalls.Add(new DrawCall(meshData, materialData, matrix));
+        _drawCalls.Add(new DrawCall(meshData, materialData, matrix));
     }
 
     public override void DrawModel(ModelData modelData, Vector3 position, Vector3 rotation, Vector3 scale) {
@@ -125,11 +125,11 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
         EnsureTextureSize();
 
-        if (initError is not null || nativeHandle == IntPtr.Zero) {
+        if (_initError is not null || _nativeHandle == IntPtr.Zero) {
             EnsureNativeInitialized();
         }
 
-        if (initError is not null || nativeHandle == IntPtr.Zero) {
+        if (_initError is not null || _nativeHandle == IntPtr.Zero) {
 
             DrawUnavailable();
             return;
@@ -144,15 +144,15 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             cameraData.Target.Y,
             cameraData.Target.Z,
             cameraData.Fov);
-        var settings = BuildSettings(frameIndex);
+        var settings = BuildSettings(_frameIndex);
         var sceneSignature = ComputeSceneSignature();
         ResetAccumulationIfNeeded(camera, sceneSignature, settings);
 
         var interopStopwatch = Stopwatch.StartNew();
 
-        var instanceMeshIds = new int[drawCalls.Count];
-        var instanceMaterialIndices = new int[drawCalls.Count];
-        var instanceTransforms = new float[drawCalls.Count * 16];
+        var instanceMeshIds = new int[_drawCalls.Count];
+        var instanceMaterialIndices = new int[_drawCalls.Count];
+        var instanceTransforms = new float[_drawCalls.Count * 16];
         var materialParameters = new List<float>();
         var materialAlbedoTextureIndices = new List<int>();
         var materialLookup = new Dictionary<MaterialData, uint>(ReferenceEqualityComparer.Instance);
@@ -196,37 +196,37 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             return textureIndex;
         }
 
-        int instanceIndex = 0;
-        foreach (var drawCall in drawCalls) {
-            var meshData = drawCall.meshData;
+        var instanceIndex = 0;
+        foreach (var drawCall in _drawCalls) {
+            var meshData = drawCall.MeshData;
 
-            if (!uploadedMeshIds.TryGetValue(meshData, out var meshId)) {
-                meshId = nextMeshId++;
+            if (!_uploadedMeshIds.TryGetValue(meshData, out var meshId)) {
+                meshId = _nextMeshId++;
                 var geometry = meshData.CreateOptixGeometry();
-                if (!OptixNative.UploadMesh(nativeHandle,
+                if (!OptixNative.UploadMesh(_nativeHandle,
                         meshId,
                         geometry.Vertices, geometry.Vertices.Length,
                         geometry.Normals, geometry.Normals.Length,
                         geometry.TexCoords, geometry.TexCoords.Length,
                         geometry.Indices, geometry.Indices.Length,
                         error, error.Capacity)) {
-                    initError = error.ToString();
-                    LogErrorOnce(initError);
+                    _initError = error.ToString();
+                    LogErrorOnce(_initError);
                     DrawUnavailable();
                     return;
                 }
-                uploadedMeshIds[meshData] = meshId;
+                _uploadedMeshIds[meshData] = meshId;
             }
 
             if (meshData.UsesSkinning || meshData.AnimatedVertices != null) {
                 animatedMeshes.Add(meshData);
             }
 
-            var materialIndex = (int)GetOrAddMaterial(drawCall.materialData);
+            var materialIndex = (int)GetOrAddMaterial(drawCall.MaterialData);
             instanceMeshIds[instanceIndex] = meshId;
             instanceMaterialIndices[instanceIndex] = materialIndex;
 
-            var m = drawCall.matrix;
+            var m = drawCall.Matrix;
             instanceTransforms[instanceIndex * 16 + 0] = m.M11;
             instanceTransforms[instanceIndex * 16 + 1] = m.M12;
             instanceTransforms[instanceIndex * 16 + 2] = m.M13;
@@ -243,29 +243,29 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         }
 
         foreach (var mesh in animatedMeshes.Distinct()) {
-            if (uploadedMeshIds.TryGetValue(mesh, out var meshId)) {
+            if (_uploadedMeshIds.TryGetValue(mesh, out var meshId)) {
                 var geometry = mesh.CreateOptixGeometry();
-                if (!OptixNative.UpdateMeshVertices(nativeHandle,
+                if (!OptixNative.UpdateMeshVertices(_nativeHandle,
                         meshId,
                         geometry.Vertices, geometry.Vertices.Length,
                         error, error.Capacity)) {
-                    initError = error.ToString();
-                    LogErrorOnce(initError);
+                    _initError = error.ToString();
+                    LogErrorOnce(_initError);
                     DrawUnavailable();
                     return;
                 }
             }
         }
 
-        lastSceneMaterialCount = materialAlbedoTextureIndices.Count;
-        lastSceneTexturedMaterialCount = materialAlbedoTextureIndices.Count(index => index >= 0);
-        lastSceneTextureCount = textureMetadata.Count / 3;
+        _lastSceneMaterialCount = materialAlbedoTextureIndices.Count;
+        _lastSceneTexturedMaterialCount = materialAlbedoTextureIndices.Count(index => index >= 0);
+        _lastSceneTextureCount = textureMetadata.Count / 3;
 
-        if (!OptixNative.RenderInstances(nativeHandle,
-                renderWidth,
-                renderHeight,
-                outputWidth,
-                outputHeight,
+        if (!OptixNative.RenderInstances(_nativeHandle,
+                _renderWidth,
+                _renderHeight,
+                _outputWidth,
+                _outputHeight,
                 camera,
                 settings,
                 instanceMeshIds,
@@ -280,27 +280,27 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
                 texturePixels.Count,
                 textureMetadata.ToArray(),
                 textureMetadata.Count,
-                frameIndex++,
-                texture.Id,
-                ref lastFrameStats,
+                _frameIndex++,
+                _texture.Id,
+                ref _lastFrameStats,
                 error,
                 error.Capacity)) {
 
             interopStopwatch.Stop();
-            lastInteropMs = interopStopwatch.Elapsed.TotalMilliseconds;
+            _lastInteropMs = interopStopwatch.Elapsed.TotalMilliseconds;
 
-            initError = error.ToString();
-            LogErrorOnce(initError);
+            _initError = error.ToString();
+            LogErrorOnce(_initError);
             DrawUnavailable();
             return;
         }
         interopStopwatch.Stop();
-        lastInteropMs = interopStopwatch.Elapsed.TotalMilliseconds;
-        lastTextureUploadMs = 0.0;
+        _lastInteropMs = interopStopwatch.Elapsed.TotalMilliseconds;
+        _lastTextureUploadMs = 0.0;
 
         DrawTexturePro(
-            texture,
-            new Rectangle(0, 0, texture.Width, texture.Height),
+            _texture,
+            new Rectangle(0, 0, _texture.Width, _texture.Height),
             new Rectangle(0, 0, GetScreenWidth(), GetScreenHeight()),
             Vector2.Zero,
             0,
@@ -311,19 +311,19 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     public override void Shutdown() {
 
-        if (nativeHandle != IntPtr.Zero) {
+        if (_nativeHandle != IntPtr.Zero) {
 
-            if (texture.Id != 0) {
+            if (_texture.Id != 0) {
 
-                OptixNative.ReleaseOutputTexture(nativeHandle, texture.Id);
+                OptixNative.ReleaseOutputTexture(_nativeHandle, _texture.Id);
             }
 
-            OptixNative.Destroy(nativeHandle);
-            nativeHandle = IntPtr.Zero;
+            OptixNative.Destroy(_nativeHandle);
+            _nativeHandle = IntPtr.Zero;
         }
 
-        if (texture.Id != 0) {
-            UnloadTexture(texture);
+        if (_texture.Id != 0) {
+            UnloadTexture(_texture);
         }
     }
 
@@ -332,46 +332,46 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         var (newRenderWidth, newRenderHeight) = GetRenderDimensions();
         var (newOutputWidth, newOutputHeight) = GetOutputDimensions();
 
-        if (newRenderWidth == renderWidth &&
-            newRenderHeight == renderHeight &&
-            newOutputWidth == outputWidth &&
-            newOutputHeight == outputHeight) {
+        if (newRenderWidth == _renderWidth &&
+            newRenderHeight == _renderHeight &&
+            newOutputWidth == _outputWidth &&
+            newOutputHeight == _outputHeight) {
 
             return;
         }
 
-        if (texture.Id != 0) {
+        if (_texture.Id != 0) {
 
-            if (nativeHandle != IntPtr.Zero) {
+            if (_nativeHandle != IntPtr.Zero) {
 
-                OptixNative.ReleaseOutputTexture(nativeHandle, texture.Id);
+                OptixNative.ReleaseOutputTexture(_nativeHandle, _texture.Id);
             }
 
-            UnloadTexture(texture);
+            UnloadTexture(_texture);
         }
 
-        renderWidth = newRenderWidth;
-        renderHeight = newRenderHeight;
-        outputWidth = newOutputWidth;
-        outputHeight = newOutputHeight;
+        _renderWidth = newRenderWidth;
+        _renderHeight = newRenderHeight;
+        _outputWidth = newOutputWidth;
+        _outputHeight = newOutputHeight;
 
-        var image = GenImageColor(outputWidth, outputHeight, Color.Black);
-        texture = LoadTextureFromImage(image);
+        var image = GenImageColor(_outputWidth, _outputHeight, Color.Black);
+        _texture = LoadTextureFromImage(image);
         UnloadImage(image);
 
         if (Settings.Quality.ResetAccumulationOnResize) {
 
-            frameIndex = 0;
-            previousSceneSignature = 0;
+            _frameIndex = 0;
+            _previousSceneSignature = 0;
         }
 
-        if (nativeHandle != IntPtr.Zero) {
+        if (_nativeHandle != IntPtr.Zero) {
 
             var error = new StringBuilder(MaxErrorLength);
-            if (!OptixNative.Resize(nativeHandle, renderWidth, renderHeight, outputWidth, outputHeight, error, error.Capacity)) {
+            if (!OptixNative.Resize(_nativeHandle, _renderWidth, _renderHeight, _outputWidth, _outputHeight, error, error.Capacity)) {
 
-                initError = error.ToString();
-                LogErrorOnce(initError);
+                _initError = error.ToString();
+                LogErrorOnce(_initError);
             }
         }
     }
@@ -395,32 +395,32 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
     private void EnsureNativeInitialized() {
 
-        if (initAttempted) {
+        if (_initAttempted) {
 
             return;
         }
 
-        initAttempted = true;
+        _initAttempted = true;
 
         var error = new StringBuilder(MaxErrorLength);
         try {
-            if (!OptixNative.Create(renderWidth, renderHeight, outputWidth, outputHeight, ref nativeHandle, error, error.Capacity)) {
+            if (!OptixNative.Create(_renderWidth, _renderHeight, _outputWidth, _outputHeight, ref _nativeHandle, error, error.Capacity)) {
 
-                initError = error.ToString();
-                LogErrorOnce(initError);
+                _initError = error.ToString();
+                LogErrorOnce(_initError);
             }
         } catch (DllNotFoundException exception) {
 
-            initError = $"Native OptiX library could not be loaded: {exception.Message}";
-            LogErrorOnce(initError);
+            _initError = $"Native OptiX library could not be loaded: {exception.Message}";
+            LogErrorOnce(_initError);
         } catch (BadImageFormatException exception) {
 
-            initError = $"Native OptiX library is not compatible with this runtime: {exception.Message}";
-            LogErrorOnce(initError);
+            _initError = $"Native OptiX library is not compatible with this runtime: {exception.Message}";
+            LogErrorOnce(_initError);
         } catch (EntryPointNotFoundException exception) {
 
-            initError = $"Native OptiX entry point is missing: {exception.Message}";
-            LogErrorOnce(initError);
+            _initError = $"Native OptiX entry point is missing: {exception.Message}";
+            LogErrorOnce(_initError);
         }
     }
 
@@ -487,7 +487,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
         if (stateChanged) {
 
-            frameIndex = 0;
+            _frameIndex = 0;
         }
     }
 
@@ -499,24 +499,24 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         DrawText($"F4 Denoiser: {(Settings.Quality.EnableDenoiser ? "ON" : "OFF")}", 10, 128, 20, Color.DarkBlue);
         DrawText($"F5/F6 Render Scale: {RenderSettings.RenderScale:0.00}x", 10, 152, 20, Color.DarkBlue);
         DrawText($"F7/F8 Denoiser Interval: {Settings.Quality.DenoiserIntervalFrames}", 10, 176, 20, Color.DarkBlue);
-        DrawText($"Interop: {lastInteropMs:0.0} ms", 10, 200, 20, Color.Maroon);
-        DrawText($"Native Total: {lastFrameStats.TotalMs:0.0} ms", 10, 224, 20, Color.Maroon);
-        DrawText($"Upload/Launch: {lastFrameStats.UploadSceneMs:0.0} / {lastFrameStats.LaunchMs:0.0} ms", 10, 248, 20, Color.Maroon);
-        DrawText($"Denoise/Present: {lastFrameStats.DenoiseMs:0.0} / {lastFrameStats.ReadbackMs:0.0} ms", 10, 272, 20, Color.Maroon);
-        DrawText($"ToneMap/CSharp: {lastFrameStats.ToneMapMs:0.0} / {lastTextureUploadMs:0.0} ms", 10, 296, 20, Color.Maroon);
-        DrawText($"Denoised Frame: {(lastFrameStats.DenoisedThisFrame != 0 ? "YES" : "NO")}", 10, 320, 20, Color.Maroon);
-        DrawText($"Scene Mats/TexMats/Tex: {lastSceneMaterialCount}/{lastSceneTexturedMaterialCount}/{lastSceneTextureCount}", 10, 344, 20, Color.Maroon);
-        DrawText($"UV MinMax: {lastSceneUvRange.X:0.00},{lastSceneUvRange.Y:0.00} / {lastSceneUvRange.Z:0.00},{lastSceneUvRange.W:0.00}", 10, 368, 20, Color.Maroon);
+        DrawText($"Interop: {_lastInteropMs:0.0} ms", 10, 200, 20, Color.Maroon);
+        DrawText($"Native Total: {_lastFrameStats.TotalMs:0.0} ms", 10, 224, 20, Color.Maroon);
+        DrawText($"Upload/Launch: {_lastFrameStats.UploadSceneMs:0.0} / {_lastFrameStats.LaunchMs:0.0} ms", 10, 248, 20, Color.Maroon);
+        DrawText($"Denoise/Present: {_lastFrameStats.DenoiseMs:0.0} / {_lastFrameStats.ReadbackMs:0.0} ms", 10, 272, 20, Color.Maroon);
+        DrawText($"ToneMap/CSharp: {_lastFrameStats.ToneMapMs:0.0} / {_lastTextureUploadMs:0.0} ms", 10, 296, 20, Color.Maroon);
+        DrawText($"Denoised Frame: {(_lastFrameStats.DenoisedThisFrame != 0 ? "YES" : "NO")}", 10, 320, 20, Color.Maroon);
+        DrawText($"Scene Mats/TexMats/Tex: {_lastSceneMaterialCount}/{_lastSceneTexturedMaterialCount}/{_lastSceneTextureCount}", 10, 344, 20, Color.Maroon);
+        DrawText($"UV MinMax: {_lastSceneUvRange.X:0.00},{_lastSceneUvRange.Y:0.00} / {_lastSceneUvRange.Z:0.00},{_lastSceneUvRange.W:0.00}", 10, 368, 20, Color.Maroon);
     }
 
     private void LogErrorOnce(string? error) {
 
-        if (!Settings.Debug.LogNativeErrors || string.IsNullOrWhiteSpace(error) || error == lastLoggedError) {
+        if (!Settings.Debug.LogNativeErrors || string.IsNullOrWhiteSpace(error) || error == _lastLoggedError) {
 
             return;
         }
 
-        lastLoggedError = error;
+        _lastLoggedError = error;
         Console.WriteLine($"[OptiX] {error}");
     }
 
@@ -561,36 +561,36 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
         if (settings.EnableAccumulation == 0) {
 
-            frameIndex = 0;
-            previousCamera = camera;
-            previousSceneSignature = sceneSignature;
+            _frameIndex = 0;
+            _previousCamera = camera;
+            _previousSceneSignature = sceneSignature;
             return;
         }
 
-        if (previousCamera is not OptixCamera lastCamera ||
+        if (_previousCamera is not OptixCamera lastCamera ||
             !AreEqual(lastCamera, camera) ||
-            previousSceneSignature != sceneSignature) {
+            _previousSceneSignature != sceneSignature) {
 
-            frameIndex = 0;
+            _frameIndex = 0;
         }
 
-        previousCamera = camera;
-        previousSceneSignature = sceneSignature;
+        _previousCamera = camera;
+        _previousSceneSignature = sceneSignature;
     }
 
     private int ComputeSceneSignature() {
 
         var hash = new HashCode();
 
-        foreach (var drawCall in drawCalls) {
+        foreach (var drawCall in _drawCalls) {
 
-            hash.Add(RuntimeHelpers.GetHashCode(drawCall.meshData));
-            hash.Add(drawCall.materialData.Color.X);
-            hash.Add(drawCall.materialData.Color.Y);
-            hash.Add(drawCall.materialData.Color.Z);
-            hash.Add(drawCall.materialData.Color.W);
-            hash.Add(drawCall.materialData.Reflectivity);
-            AddMatrixToHash(ref hash, drawCall.matrix);
+            hash.Add(RuntimeHelpers.GetHashCode(drawCall.MeshData));
+            hash.Add(drawCall.MaterialData.Color.X);
+            hash.Add(drawCall.MaterialData.Color.Y);
+            hash.Add(drawCall.MaterialData.Color.Z);
+            hash.Add(drawCall.MaterialData.Color.W);
+            hash.Add(drawCall.MaterialData.Reflectivity);
+            AddMatrixToHash(ref hash, drawCall.Matrix);
         }
 
         return hash.ToHashCode();
@@ -627,7 +627,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         hash.Add(matrix.M44);
     }
 
-    private readonly record struct DrawCall(MeshData meshData, MaterialData materialData, Matrix4x4 matrix);
+    private readonly record struct DrawCall(MeshData MeshData, MaterialData MaterialData, Matrix4x4 Matrix);
 
     private static class OptixNative {
 

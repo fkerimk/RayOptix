@@ -4,23 +4,23 @@ using static Raylib_cs.Raylib;
 
 internal class RaylibRenderer(CameraData cameraData) : Renderer {
 
-    private RenderTexture2D renderTexture;
-    private int renderWidth;
-    private int renderHeight;
+    private RenderTexture2D _renderTexture;
+    private int _renderWidth;
+    private int _renderHeight;
 
-    public override string name => "Raylib";
+    public override string Name => "Raylib";
 
     public override void Init() {
 
-        (renderWidth, renderHeight) = GetRenderDimensions();
-        renderTexture = LoadRenderTexture(renderWidth, renderHeight);
+        (_renderWidth, _renderHeight) = GetRenderDimensions();
+        _renderTexture = LoadRenderTexture(_renderWidth, _renderHeight);
     }
 
     public override void Begin() {
 
         EnsureTextureSize();
 
-        BeginTextureMode(renderTexture);
+        BeginTextureMode(_renderTexture);
         ClearBackground(Color.DarkGray);
         BeginMode3D(cameraData.RaylibCamera!.Value);
     }
@@ -31,8 +31,8 @@ internal class RaylibRenderer(CameraData cameraData) : Renderer {
         EndTextureMode();
 
         DrawTexturePro(
-            renderTexture.Texture,
-            new Rectangle(0, 0, renderTexture.Texture.Width, -renderTexture.Texture.Height),
+            _renderTexture.Texture,
+            new Rectangle(0, 0, _renderTexture.Texture.Width, -_renderTexture.Texture.Height),
             new Rectangle(0, 0, GetScreenWidth(), GetScreenHeight()),
             Vector2.Zero,
             0,
@@ -44,7 +44,7 @@ internal class RaylibRenderer(CameraData cameraData) : Renderer {
 
     public override void Shutdown() {
 
-        UnloadRenderTexture(renderTexture);
+        UnloadRenderTexture(_renderTexture);
     }
 
     public override void DrawMesh(MeshData meshData, MaterialData materialData, Matrix4x4 matrix) {
@@ -100,17 +100,17 @@ internal class RaylibRenderer(CameraData cameraData) : Renderer {
 
         var (newWidth, newHeight) = GetRenderDimensions();
 
-        if (newWidth == renderWidth && newHeight == renderHeight) {
+        if (newWidth == _renderWidth && newHeight == _renderHeight) {
 
             return;
         }
 
-        UnloadRenderTexture(renderTexture);
+        UnloadRenderTexture(_renderTexture);
 
-        renderWidth = newWidth;
-        renderHeight = newHeight;
+        _renderWidth = newWidth;
+        _renderHeight = newHeight;
 
-        renderTexture = LoadRenderTexture(renderWidth, renderHeight);
+        _renderTexture = LoadRenderTexture(_renderWidth, _renderHeight);
     }
 
     private void DrawDebugState() {
