@@ -8,7 +8,7 @@
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <InvariantGlobalization>true</InvariantGlobalization>
         <UseSharedCompilation>false</UseSharedCompilation>
-        <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**;external/**;native/build/**</DefaultItemExcludes>
+        <DefaultItemExcludes>$bin/**;obj/**;external/**;native/build/**</DefaultItemExcludes>
     </PropertyGroup>
 
     <ItemGroup>

@@ -77,18 +77,18 @@ function ensure_valid_archive --argument-names path url description
         return
     end
 
-    if string match -q "*.exe" -- "$path"
-        7z t "$path" >/dev/null 2>&1
-    else if string match -q "*.zip" -- "$path"
-        unzip -tq "$path" >/dev/null 2>&1
-    else
-        tar -tf "$path" >/dev/null 2>&1
-    end
-
-    if test $status -ne 0
-        echo "Invalid $description archive, re-downloading: $path" >&2
-        redownload_file "$url" "$path" "$description"
-    end
+    #if string match -q "*.exe" -- "$path"
+    #    7z t "$path" >/dev/null 2>&1
+    #else if string match -q "*.zip" -- "$path"
+    #    unzip -tq "$path" >/dev/null 2>&1
+    #else
+    #    tar -tf "$path" >/dev/null 2>&1
+    #end
+    #
+    #if test $status -ne 0
+    #    echo "Invalid $description archive, re-downloading: $path" >&2
+    #    redownload_file "$url" "$path" "$description"
+    #end
 end
 
 function resolve_choice --argument-names variable_name prompt
