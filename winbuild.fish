@@ -10,6 +10,8 @@ end
 set BUILD_ROOT "$SCRIPT_DIR/external/winbuild"
 set DOWNLOAD_ROOT "$BUILD_ROOT/downloads"
 set TOOL_ROOT "$BUILD_ROOT/tools"
+set WINDOWS_MSBUILD_ROOT "$BUILD_ROOT/msbuild"
+set WINDOWS_MSBUILD_OBJ_ROOT "external/winbuild/msbuild/obj/"
 set DOTNET_CLI_HOME_DIR "$BUILD_ROOT/wine-dotnet-home"
 set WINE_HOME_DIR "$BUILD_ROOT/wine-home"
 set WINE_PREFIX_DIR "$BUILD_ROOT/prefix"
@@ -58,6 +60,7 @@ mkdir -p \
     "$DOTNET_CLI_HOME_DIR" \
     "$WINE_HOME_DIR" \
     "$WINE_PREFIX_DIR" \
+    "$WINDOWS_MSBUILD_ROOT" \
     "$BUILD_ROOT/logs"
 
 function require_file --argument-names path description
@@ -370,6 +373,7 @@ end
 
 set ALL_RUNTIME_DLLS $WINDOWS_CUDA_RUNTIME_DLLS $LLVM_MINGW_RUNTIME_DLLS
 set NATIVE_RUNTIME_DEPENDENCY_PATHS (string join ';' $ALL_RUNTIME_DLLS)
+set WINDOWS_NATIVE_LIBRARY_PATH "$NATIVE_BUILD_DIR/RayOptixNative.dll"
 
 cmake -S "$SCRIPT_DIR/native" \
     -B "$NATIVE_BUILD_DIR" \
@@ -407,18 +411,24 @@ set -lx NUGET_CERT_REVOCATION_MODE offline
 set -lx ROPTIX_NATIVE_RUNTIME_DEPS "$NATIVE_RUNTIME_DEPENDENCY_PATHS"
 
 "$WINE_RUNNER" "$WINDOWS_DOTNET_EXE" restore -r win-x64 \
-    /p:NativeHostIsWindows=true \
     /p:RestoreIgnoreFailedSources=true \
     /p:NuGetAudit=false \
-    /p:SkipNativeOptixBuild=true
+    /p:SkipNativeOptixBuild=true \
+    /p:NativeLibraryPath="$WINDOWS_NATIVE_LIBRARY_PATH" \
+    /p:NativeRuntimeDependencyPaths="$NATIVE_RUNTIME_DEPENDENCY_PATHS" \
+    /p:BaseIntermediateOutputPath="$WINDOWS_MSBUILD_OBJ_ROOT" \
+    /p:MSBuildProjectExtensionsPath="$WINDOWS_MSBUILD_OBJ_ROOT"
 if test $status -ne 0
     exit $status
 end
 
 "$WINE_RUNNER" "$WINDOWS_DOTNET_EXE" publish -c Release -r win-x64 --no-restore \
-    /p:NativeHostIsWindows=true \
     /p:RestoreIgnoreFailedSources=true \
     /p:NuGetAudit=false \
     /p:SkipNativeOptixBuild=true \
+    /p:NativeLibraryPath="$WINDOWS_NATIVE_LIBRARY_PATH" \
+    /p:NativeRuntimeDependencyPaths="$NATIVE_RUNTIME_DEPENDENCY_PATHS" \
+    /p:BaseIntermediateOutputPath="$WINDOWS_MSBUILD_OBJ_ROOT" \
+    /p:MSBuildProjectExtensionsPath="$WINDOWS_MSBUILD_OBJ_ROOT" \
     $argv
 exit $status

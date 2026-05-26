@@ -418,7 +418,12 @@ private:
 #if defined(_WIN32)
         AppendBootstrapLog("[OptiX] bootstrap: cuCtxCreate");
 #endif
+#if defined(_WIN32)
         CheckCudaDriver(cuCtxCreate(&cudaContext_, 0, cudaDevice_), "cuCtxCreate");
+#else
+        CUctxCreateParams ctxCreateParams{};
+        CheckCudaDriver(cuCtxCreate(&cudaContext_, &ctxCreateParams, 0, cudaDevice_), "cuCtxCreate");
+#endif
 #if defined(_WIN32)
         AppendBootstrapLog("[OptiX] bootstrap: optixInit");
 #endif
