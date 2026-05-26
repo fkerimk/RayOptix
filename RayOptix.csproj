@@ -8,72 +8,11 @@
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <InvariantGlobalization>true</InvariantGlobalization>
         <UseSharedCompilation>false</UseSharedCompilation>
-        <DefaultItemExcludes>$(DefaultItemExcludes);external/**;native/build/**</DefaultItemExcludes>
-    </PropertyGroup>
-
-    <PropertyGroup>
-        <SkipNativeOptixBuild Condition="'$(SkipNativeOptixBuild)' == ''">false</SkipNativeOptixBuild>
-        <NativePlatformName Condition="'$(NativePlatformName)' == '' and '$(OS)' == 'Windows_NT'">windows-x64</NativePlatformName>
-        <NativePlatformName Condition="'$(NativePlatformName)' == ''">linux-x64</NativePlatformName>
-        <NativeBuildDirectory Condition="'$(NativeBuildDirectory)' == ''">native/build/$(Configuration)/$(NativePlatformName)</NativeBuildDirectory>
-        <NativeLibraryPath Condition="'$(NativeLibraryPath)' == '' and '$(NativePlatformName)' == 'windows-x64'">$(NativeBuildDirectory)/RayOptixNative.dll</NativeLibraryPath>
-        <NativeLibraryPath Condition="'$(NativeLibraryPath)' == ''">$(NativeBuildDirectory)/libRayOptixNative.so</NativeLibraryPath>
-        <NativeCMakeBuildType Condition="'$(Configuration)' == 'Debug'">Debug</NativeCMakeBuildType>
-        <NativeCMakeBuildType Condition="'$(NativeCMakeBuildType)' == ''">Release</NativeCMakeBuildType>
-        <NativeRuntimeDependencyPaths Condition="'$(NativeRuntimeDependencyPaths)' == ''">$(ROPTIX_NATIVE_RUNTIME_DEPS)</NativeRuntimeDependencyPaths>
-        <NativeConfigureArgs Condition="'$(NativeConfigureArgs)' == ''">-DCMAKE_BUILD_TYPE=$(NativeCMakeBuildType)</NativeConfigureArgs>
+        <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**;external/**;native/build/**</DefaultItemExcludes>
     </PropertyGroup>
 
     <ItemGroup>
         <PackageReference Include="Raylib-cs" Version="7.0.2"/>
     </ItemGroup>
-
-    <Target Name="BuildNativeOptix"
-            BeforeTargets="BeforeBuild"
-            Condition="'$(SkipNativeOptixBuild)' != 'true' and '$(DesignTimeBuild)' != 'true'">
-        <MakeDir Directories="$(NativeBuildDirectory)"/>
-        <Exec Command="cmake -S native -B &quot;$(NativeBuildDirectory)&quot; $(NativeConfigureArgs)"/>
-        <Exec Command="cmake --build &quot;$(NativeBuildDirectory)&quot; --config $(Configuration) -j4"/>
-    </Target>
-
-    <Target Name="CopyNativeOptixToBuild"
-            AfterTargets="Build"
-            Condition="'$(DesignTimeBuild)' != 'true' and Exists('$(NativeLibraryPath)')">
-        <Copy SourceFiles="$(NativeLibraryPath)"
-              DestinationFolder="$(OutDir)"
-              SkipUnchangedFiles="true"/>
-    </Target>
-
-    <Target Name="CopyNativeOptixRuntimeDependenciesToBuild"
-            AfterTargets="Build"
-            Condition="'$(DesignTimeBuild)' != 'true' and '$(NativeRuntimeDependencyPaths)' != ''">
-        <ItemGroup>
-            <NativeRuntimeDependencies Include="$(NativeRuntimeDependencyPaths)"/>
-        </ItemGroup>
-        <Copy SourceFiles="@(NativeRuntimeDependencies)"
-              DestinationFolder="$(OutDir)"
-              SkipUnchangedFiles="true"
-              Condition="'@(NativeRuntimeDependencies)' != ''"/>
-    </Target>
-
-    <Target Name="CopyNativeOptixToPublish"
-            AfterTargets="Publish"
-            Condition="'$(DesignTimeBuild)' != 'true' and Exists('$(NativeLibraryPath)')">
-        <Copy SourceFiles="$(NativeLibraryPath)"
-              DestinationFolder="$(PublishDir)"
-              SkipUnchangedFiles="true"/>
-    </Target>
-
-    <Target Name="CopyNativeOptixRuntimeDependenciesToPublish"
-            AfterTargets="Publish"
-            Condition="'$(DesignTimeBuild)' != 'true' and '$(NativeRuntimeDependencyPaths)' != ''">
-        <ItemGroup>
-            <NativeRuntimeDependencies Include="$(NativeRuntimeDependencyPaths)"/>
-        </ItemGroup>
-        <Copy SourceFiles="@(NativeRuntimeDependencies)"
-              DestinationFolder="$(PublishDir)"
-              SkipUnchangedFiles="true"
-              Condition="'@(NativeRuntimeDependencies)' != ''"/>
-    </Target>
 
 </Project>
