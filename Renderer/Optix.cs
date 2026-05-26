@@ -22,10 +22,6 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             public static int DenoiserIntervalFrames = 1;
             public const int MinDenoiserIntervalFrames = 1;
             public const int MaxDenoiserIntervalFrames = 32;
-            public static float RenderScale = 1f;
-            public const float MinRenderScale = 0.25f;
-            public const float MaxRenderScale = 1.0f;
-            public const float RenderScaleStep = 0.1f;
             public const bool ResetAccumulationOnResize = true;
         }
 
@@ -248,9 +244,9 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private static (int Width, int Height) GetRenderDimensions() {
 
         var scale = Math.Clamp(
-            Settings.Quality.RenderScale,
-            Settings.Quality.MinRenderScale,
-            Settings.Quality.MaxRenderScale);
+            RenderSettings.RenderScale,
+            RenderSettings.MinRenderScale,
+            RenderSettings.MaxRenderScale);
 
         var width = Math.Max(1, (int)MathF.Round(GetScreenWidth() * scale));
         var height = Math.Max(1, (int)MathF.Round(GetScreenHeight() * scale));
@@ -341,16 +337,16 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         }
 
         if (IsKeyPressed(KeyboardKey.F5)) {
-            Settings.Quality.RenderScale = MathF.Max(
-                Settings.Quality.MinRenderScale,
-                Settings.Quality.RenderScale - Settings.Quality.RenderScaleStep);
+            RenderSettings.RenderScale = MathF.Max(
+                RenderSettings.MinRenderScale,
+                RenderSettings.RenderScale - RenderSettings.RenderScaleStep);
             stateChanged = true;
         }
 
         if (IsKeyPressed(KeyboardKey.F6)) {
-            Settings.Quality.RenderScale = MathF.Min(
-                Settings.Quality.MaxRenderScale,
-                Settings.Quality.RenderScale + Settings.Quality.RenderScaleStep);
+            RenderSettings.RenderScale = MathF.Min(
+                RenderSettings.MaxRenderScale,
+                RenderSettings.RenderScale + RenderSettings.RenderScaleStep);
             stateChanged = true;
         }
 
@@ -366,7 +362,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         DrawText($"F2 Sun Light: {(Settings.Lighting.EnableSunLight ? "ON" : "OFF")}", 10, 80, 20, Color.DarkBlue);
         DrawText($"F3 Hard Shadows: {(Settings.Shadows.EnableHardShadows ? "ON" : "OFF")}", 10, 104, 20, Color.DarkBlue);
         DrawText($"F4 Denoiser: {(Settings.Quality.EnableDenoiser ? "ON" : "OFF")}", 10, 128, 20, Color.DarkBlue);
-        DrawText($"F5/F6 Render Scale: {Settings.Quality.RenderScale:0.00}x", 10, 152, 20, Color.DarkBlue);
+        DrawText($"F5/F6 Render Scale: {RenderSettings.RenderScale:0.00}x", 10, 152, 20, Color.DarkBlue);
         DrawText($"F7/F8 Denoiser Interval: {Settings.Quality.DenoiserIntervalFrames}", 10, 176, 20, Color.DarkBlue);
         DrawText($"Interop: {lastInteropMs:0.0} ms", 10, 200, 20, Color.Maroon);
         DrawText($"Native Total: {lastFrameStats.TotalMs:0.0} ms", 10, 224, 20, Color.Maroon);
