@@ -399,42 +399,47 @@ private:
         AppendBootstrapLog("[OptiX] bootstrap: preflight-ok");
 #endif
         int deviceCount = 0;
-        #if defined(_WIN32)
-        AppendBootstrapLog("[OptiX] bootstrap: cudaGetDeviceCount");
-        #endif
-        CheckCuda(cudaGetDeviceCount(&deviceCount), "cudaGetDeviceCount");
+#if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: cuInit");
+#endif
+        CheckCudaDriver(cuInit(0), "cuInit");
+#if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: cuDeviceGetCount");
+#endif
+        CheckCudaDriver(cuDeviceGetCount(&deviceCount), "cuDeviceGetCount");
         if (deviceCount <= 0) {
             throw OptixError("No CUDA-capable NVIDIA device is available for OptiX.");
         }
 
-        #if defined(_WIN32)
-        AppendBootstrapLog("[OptiX] bootstrap: cudaSetDevice");
-        #endif
-        CheckCuda(cudaSetDevice(0), "cudaSetDevice");
-        #if defined(_WIN32)
-        AppendBootstrapLog("[OptiX] bootstrap: cudaFree(init)");
-        #endif
-        CheckCuda(cudaFree(nullptr), "cudaFree(init)");
-        #if defined(_WIN32)
+#if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: cuDeviceGet");
+#endif
+        CheckCudaDriver(cuDeviceGet(&cudaDevice_, 0), "cuDeviceGet");
+#if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: cuCtxCreate");
+#endif
+        CUctxCreateParams ctxCreateParams{};
+        CheckCudaDriver(cuCtxCreate(&cudaContext_, &ctxCreateParams, 0, cudaDevice_), "cuCtxCreate");
+#if defined(_WIN32)
         AppendBootstrapLog("[OptiX] bootstrap: optixInit");
-        #endif
+#endif
         CheckOptix(optixInit(), "optixInit");
 
         OptixDeviceContextOptions options{};
         options.logCallbackLevel = 4;
         options.logCallbackFunction = &LogCallback;
 
-        #if defined(_WIN32)
+#if defined(_WIN32)
         AppendBootstrapLog("[OptiX] bootstrap: optixDeviceContextCreate");
-        #endif
-        CheckOptix(optixDeviceContextCreate(nullptr, &options, &context_), "optixDeviceContextCreate");
-        #if defined(_WIN32)
-        AppendBootstrapLog("[OptiX] bootstrap: cudaStreamCreate");
-        #endif
-        CheckCuda(cudaStreamCreate(&stream_), "cudaStreamCreate");
-        #if defined(_WIN32)
+#endif
+        CheckOptix(optixDeviceContextCreate(cudaContext_, &options, &context_), "optixDeviceContextCreate");
+#if defined(_WIN32)
+        AppendBootstrapLog("[OptiX] bootstrap: cuStreamCreate");
+#endif
+        CheckCudaDriver(cuStreamCreate(reinterpret_cast<CUstream*>(&stream_), CU_STREAM_DEFAULT), "cuStreamCreate");
+#if defined(_WIN32)
         AppendBootstrapLog("[OptiX] bootstrap: init-ok");
-        #endif
+#endif
     }
 
     void CreateDenoiser() {
@@ -1010,12 +1015,16 @@ private:
             denoiser_ = nullptr;
         }
         if (stream_ != nullptr) {
-            IgnoreCuda(cudaStreamDestroy(stream_));
+            IgnoreCudaDriver(cuStreamDestroy(reinterpret_cast<CUstream>(stream_)));
             stream_ = nullptr;
         }
         if (context_ != nullptr) {
             optixDeviceContextDestroy(context_);
             context_ = nullptr;
+        }
+        if (cudaContext_ != nullptr) {
+            IgnoreCudaDriver(cuCtxDestroy(cudaContext_));
+            cudaContext_ = nullptr;
         }
     }
 
@@ -1158,6 +1167,8 @@ private:
     }
 
     OptixDeviceContext context_ = nullptr;
+    CUcontext cudaContext_ = nullptr;
+    CUdevice cudaDevice_ = 0;
     cudaStream_t stream_ = nullptr;
     OptixDenoiser denoiser_ = nullptr;
     OptixModule module_ = nullptr;
