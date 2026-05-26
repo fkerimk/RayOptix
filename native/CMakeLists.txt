@@ -40,9 +40,29 @@ if (WIN32)
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
+# Read CUDA kernel sources for NVRTC runtime embedding
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/optix_kernels.cu" ROPTIX_OPTIX_KERNEL_SOURCE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/present_kernels.cu" ROPTIX_PRESENT_KERNEL_SOURCE)
+
+# Generate native_device_sources.h from template
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/native_device_sources.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/native_device_sources.h"
+    @ONLY
+)
+
 add_library(RayOptixNative SHARED
     src/interop.cpp
     src/native_exports.cpp
+    src/optix_kernels.cu
+    src/present_kernels.cu
+)
+
+# Mark .cu files as header-only (not compiled by host compiler, used by NVRTC at runtime)
+set_source_files_properties(
+    src/optix_kernels.cu
+    src/present_kernels.cu
+    PROPERTIES HEADER_FILE_ONLY TRUE
 )
 set_target_properties(RayOptixNative PROPERTIES PREFIX "")
 
@@ -55,6 +75,7 @@ endif()
 target_include_directories(RayOptixNative PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../external/optix-dev/include
     ${ROPTIX_CUDA_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 
 target_compile_definitions(RayOptixNative PRIVATE

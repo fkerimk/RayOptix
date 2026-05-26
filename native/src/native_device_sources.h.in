@@ -1,0 +1,9 @@
+#pragma once
+
+inline constexpr const char* kOptixDeviceSource = R"(
+@ROPTIX_OPTIX_KERNEL_SOURCE@
+)";
+
+inline constexpr const char* kPresentDeviceSource = R"(
+@ROPTIX_PRESENT_KERNEL_SOURCE@
+)";
