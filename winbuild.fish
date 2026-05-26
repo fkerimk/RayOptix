@@ -16,7 +16,7 @@ set WINE_PREFIX_DIR "$BUILD_ROOT/prefix"
 set NATIVE_BUILD_DIR "$SCRIPT_DIR/native/build/Release/windows-x64"
 set LLVM_MINGW_ARCHIVE "$DOWNLOAD_ROOT/llvm-mingw-20260519-ucrt-ubuntu-22.04-x86_64.tar.xz"
 set LLVM_MINGW_ROOT "$BUILD_ROOT/llvm-mingw"
-set WINDOWS_CUDA_INSTALLER "$DOWNLOAD_ROOT/cuda_13.2.1_windows.exe"
+set WINDOWS_CUDA_INSTALLER "$DOWNLOAD_ROOT/cuda_12.9.0_windows.exe"
 set WINDOWS_CUDA_ROOT "$BUILD_ROOT/cuda-windows"
 set WINDOWS_CUDA_INCLUDE_ROOT "$WINDOWS_CUDA_ROOT/cuda_cudart/cudart/include"
 set LINUX_CUDA_INCLUDE_ROOT "/opt/cuda/targets/x86_64-linux/include"
@@ -43,9 +43,9 @@ set WINE_RUNNER_CANDIDATES \
     "/usr/bin/wine"
 
 set WINDOWS_CUDA_RUNTIME_DLLS \
-    "$WINDOWS_CUDA_ROOT/cuda_cudart/cudart/bin/x64/cudart64_13.dll" \
-    "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc/bin/x64/nvrtc64_130_0.dll" \
-    "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc/bin/x64/nvrtc-builtins64_132.dll"
+    "$WINDOWS_CUDA_ROOT/cuda_cudart/cudart/bin/cudart64_12.dll" \
+    "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc/bin/nvrtc64_120_0.dll" \
+    "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc/bin/nvrtc-builtins64_129.dll"
 
 set LLVM_MINGW_RUNTIME_DLLS \
     "$LLVM_MINGW_ROOT/x86_64-w64-mingw32/bin/libc++.dll" \
@@ -304,24 +304,28 @@ end
 
 ensure_valid_archive \
     "$WINDOWS_CUDA_INSTALLER" \
-    "https://developer.download.nvidia.com/compute/cuda/13.2.1/local_installers/cuda_13.2.1_windows.exe" \
+    "https://developer.download.nvidia.com/compute/cuda/12.9.0/local_installers/cuda_12.9.0_576.02_windows.exe" \
     "CUDA Windows installer"
 
 ensure_windows_dotnet
 ensure_wine_nvoptix_package
 initialize_wine_prefix "$WINE_RUNNER"
 
-if not test -f "$WINDOWS_CUDA_ROOT/cuda_cudart/cudart/lib/x64/cudart.lib"; or not test -f "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc_dev/lib/x64/nvrtc.lib"
+if not test -f "$WINDOWS_CUDA_ROOT/cuda_cudart/cudart/lib/x64/cudart.lib"; \
+    or not test -f "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc_dev/lib/x64/nvrtc.lib"; \
+    or not test -f "$WINDOWS_CUDA_ROOT/cuda_cudart/cudart/bin/cudart64_12.dll"; \
+    or not test -f "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc/bin/nvrtc64_120_0.dll"; \
+    or not test -f "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc/bin/nvrtc-builtins64_129.dll"
     rm -rf "$WINDOWS_CUDA_ROOT"
     mkdir -p "$WINDOWS_CUDA_ROOT"
     7z x -y "$WINDOWS_CUDA_INSTALLER" \
         "cuda_cudart/cudart/include/*" \
         "cuda_cudart/cudart/lib/x64/*" \
-        "cuda_cudart/cudart/bin/x64/cudart64_13.dll" \
+        "cuda_cudart/cudart/bin/cudart64_12.dll" \
         "cuda_nvrtc/nvrtc_dev/include/*" \
         "cuda_nvrtc/nvrtc_dev/lib/x64/*" \
-        "cuda_nvrtc/nvrtc/bin/x64/nvrtc64_130_0.dll" \
-        "cuda_nvrtc/nvrtc/bin/x64/nvrtc-builtins64_132.dll" \
+        "cuda_nvrtc/nvrtc/bin/nvrtc64_120_0.dll" \
+        "cuda_nvrtc/nvrtc/bin/nvrtc-builtins64_129.dll" \
         "cuda_cccl/thrust/include/*" \
         "-o$WINDOWS_CUDA_ROOT" >/dev/null
     if test $status -ne 0
@@ -341,6 +345,9 @@ cp -rn "$LINUX_CUDA_INCLUDE_ROOT/crt/"* "$WINDOWS_CUDA_INCLUDE_ROOT/crt/"
 require_file "$WINDOWS_CUDA_ROOT/cuda_cudart/cudart/lib/x64/cudart.lib" "Windows cudart import library"
 require_file "$WINDOWS_CUDA_ROOT/cuda_cudart/cudart/lib/x64/cuda.lib" "Windows CUDA driver import library"
 require_file "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc_dev/lib/x64/nvrtc.lib" "Windows NVRTC import library"
+require_file "$WINDOWS_CUDA_ROOT/cuda_cudart/cudart/bin/cudart64_12.dll" "Windows cudart runtime DLL"
+require_file "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc/bin/nvrtc64_120_0.dll" "Windows NVRTC runtime DLL"
+require_file "$WINDOWS_CUDA_ROOT/cuda_nvrtc/nvrtc/bin/nvrtc-builtins64_129.dll" "Windows NVRTC builtins DLL"
 require_file "$WINDOWS_CUDA_INCLUDE_ROOT/cuda.h" "Windows CUDA header set"
 require_file "$WINDOWS_CUDA_INCLUDE_ROOT/cuda_runtime_api.h" "Windows CUDA runtime header set"
 require_file "$WINDOWS_CUDA_INCLUDE_ROOT/nvrtc.h" "Windows NVRTC header set"
