@@ -28,19 +28,25 @@
         <PackageReference Include="Raylib-cs" Version="7.0.2"/>
     </ItemGroup>
 
-    <Target Name="BuildNativeOptix" BeforeTargets="BeforeBuild" Condition="'$(SkipNativeOptixBuild)' != 'true'">
+    <Target Name="BuildNativeOptix"
+            BeforeTargets="BeforeBuild"
+            Condition="'$(SkipNativeOptixBuild)' != 'true' and '$(DesignTimeBuild)' != 'true'">
         <MakeDir Directories="$(NativeBuildDirectory)"/>
         <Exec Command="cmake -S native -B &quot;$(NativeBuildDirectory)&quot; $(NativeConfigureArgs)"/>
         <Exec Command="cmake --build &quot;$(NativeBuildDirectory)&quot; --config $(Configuration) -j4"/>
     </Target>
 
-    <Target Name="CopyNativeOptixToBuild" AfterTargets="Build" Condition="Exists('$(NativeLibraryPath)')">
+    <Target Name="CopyNativeOptixToBuild"
+            AfterTargets="Build"
+            Condition="'$(DesignTimeBuild)' != 'true' and Exists('$(NativeLibraryPath)')">
         <Copy SourceFiles="$(NativeLibraryPath)"
               DestinationFolder="$(OutDir)"
               SkipUnchangedFiles="true"/>
     </Target>
 
-    <Target Name="CopyNativeOptixRuntimeDependenciesToBuild" AfterTargets="Build" Condition="'$(NativeRuntimeDependencyPaths)' != ''">
+    <Target Name="CopyNativeOptixRuntimeDependenciesToBuild"
+            AfterTargets="Build"
+            Condition="'$(DesignTimeBuild)' != 'true' and '$(NativeRuntimeDependencyPaths)' != ''">
         <ItemGroup>
             <NativeRuntimeDependencies Include="$(NativeRuntimeDependencyPaths)"/>
         </ItemGroup>
@@ -50,13 +56,17 @@
               Condition="'@(NativeRuntimeDependencies)' != ''"/>
     </Target>
 
-    <Target Name="CopyNativeOptixToPublish" AfterTargets="Publish" Condition="Exists('$(NativeLibraryPath)')">
+    <Target Name="CopyNativeOptixToPublish"
+            AfterTargets="Publish"
+            Condition="'$(DesignTimeBuild)' != 'true' and Exists('$(NativeLibraryPath)')">
         <Copy SourceFiles="$(NativeLibraryPath)"
               DestinationFolder="$(PublishDir)"
               SkipUnchangedFiles="true"/>
     </Target>
 
-    <Target Name="CopyNativeOptixRuntimeDependenciesToPublish" AfterTargets="Publish" Condition="'$(NativeRuntimeDependencyPaths)' != ''">
+    <Target Name="CopyNativeOptixRuntimeDependenciesToPublish"
+            AfterTargets="Publish"
+            Condition="'$(DesignTimeBuild)' != 'true' and '$(NativeRuntimeDependencyPaths)' != ''">
         <ItemGroup>
             <NativeRuntimeDependencies Include="$(NativeRuntimeDependencyPaths)"/>
         </ItemGroup>
