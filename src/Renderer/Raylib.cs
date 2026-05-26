@@ -53,14 +53,19 @@ internal class RaylibRenderer(CameraData cameraData) : Renderer {
     }
 
     public override void DrawModel(ModelData modelData, Vector3 position, Vector3 rotation, Vector3 scale) {
-        
-        var transform = Util.TransformMatrix(position, rotation, scale);
+        var transform = Util.TransformMatrix(
+            modelData.Position + position,
+            modelData.RotationDegrees + rotation,
+            new Vector3(modelData.Scale.X * scale.X, modelData.Scale.Y * scale.Y, modelData.Scale.Z * scale.Z));
 
         foreach (var mesh in modelData.Meshes) {
             var material = mesh.MaterialIndex >= 0 && mesh.MaterialIndex < modelData.Materials.Count && modelData.Materials[mesh.MaterialIndex].RaylibMaterial.HasValue
                 ? modelData.Materials[mesh.MaterialIndex].RaylibMaterial!.Value
                 : mesh.FallbackMaterial;
-            Raylib.DrawMesh(mesh.Mesh, material, transform);
+
+            if (mesh.RaylibMesh.HasValue && material.HasValue) {
+                Raylib.DrawMesh(mesh.RaylibMesh.Value, material.Value, transform);
+            }
         }
     }
 

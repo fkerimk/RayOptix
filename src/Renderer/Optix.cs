@@ -98,8 +98,18 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     }
 
     public override void DrawModel(ModelData modelData, Vector3 position, Vector3 rotation, Vector3 scale) {
-        
-        throw new NotImplementedException();
+        var transform = Util.TransformMatrix(
+            modelData.Position + position,
+            modelData.RotationDegrees + rotation,
+            new Vector3(modelData.Scale.X * scale.X, modelData.Scale.Y * scale.Y, modelData.Scale.Z * scale.Z));
+
+        foreach (var mesh in modelData.Meshes) {
+            if (mesh.MaterialIndex < 0 || mesh.MaterialIndex >= modelData.Materials.Count) {
+                continue;
+            }
+
+            DrawMesh(mesh, modelData.Materials[mesh.MaterialIndex], transform);
+        }
     }
 
     public override void End() {

@@ -22,7 +22,7 @@ internal sealed class ModelData(string path) : SharedData {
         | PostProcessSteps.OptimizeMeshes
         ;
 
-    public readonly List<ModelMeshData> Meshes = [];
+    public readonly List<MeshData> Meshes = [];
     public readonly List<MaterialData> Materials = [];
     private readonly List<BoneInfoData> bones = [];
     private readonly Dictionary<string, List<BoneInfoData>> boneMap = [];
@@ -67,7 +67,9 @@ internal sealed class ModelData(string path) : SharedData {
         BuildMaterials(scene, embeddedTextureLookup);
 
         for (var i = 0; i < scene.Meshes.Count; i++) {
-            Meshes.Add(ProcessMesh(scene.Meshes[i], i, bones, boneMapping));
+            var meshData = ProcessMesh(scene.Meshes[i], i, bones, boneMapping);
+            meshData.Build();
+            Meshes.Add(meshData);
         }
 
         rootNode = ProcessNode(scene.RootNode);
@@ -303,7 +305,7 @@ internal sealed class ModelData(string path) : SharedData {
         return textureData;
     }
 
-    private static ModelMeshData ProcessMesh(Assimp.Mesh mesh, int meshIndex, List<BoneInfoData> bones, Dictionary<string, List<int>> boneMapping) {
+    private static MeshData ProcessMesh(Assimp.Mesh mesh, int meshIndex, List<BoneInfoData> bones, Dictionary<string, List<int>> boneMapping) {
 
         var vertices = new Vector3[mesh.VertexCount];
         var normals = new Vector3[mesh.VertexCount];
@@ -362,9 +364,16 @@ internal sealed class ModelData(string path) : SharedData {
             }
         }
 
-        var material = LoadMaterialDefault();
-        var uploadedMesh = CreateUploadedMesh(vertices, normals, texCoords, indices);
-        return new ModelMeshData(uploadedMesh, material, mesh.MaterialIndex, meshIndex, vertices, normals, animatedVertices, animatedNormals, texCoords, indices, boneData, mesh.Bones.Count > 0);
+        return new MeshData(
+            vertices,
+            normals,
+            texCoords,
+            indices,
+            mesh.MaterialIndex,
+            meshIndex,
+            boneData,
+            mesh.Bones.Count > 0,
+            LoadMaterialDefault());
     }
 
     private static ModelNodeData ProcessNode(Node node) {
@@ -443,38 +452,6 @@ internal sealed class ModelData(string path) : SharedData {
                && Math.Abs(left.M44 - right.M44) < epsilon;
     }
 
-    private static unsafe Mesh CreateUploadedMesh(Vector3[] vertices, Vector3[] normals, Vector2[] texCoords, uint[] indices) {
-
-        var mesh = new Mesh {
-            VertexCount = vertices.Length,
-            TriangleCount = indices.Length / 3,
-            Vertices = (float*)MemAlloc((uint)(vertices.Length * 3 * sizeof(float))),
-            Normals = (float*)MemAlloc((uint)(normals.Length * 3 * sizeof(float))),
-            TexCoords = (float*)MemAlloc((uint)(texCoords.Length * 2 * sizeof(float))),
-            Indices = (ushort*)MemAlloc((uint)(indices.Length * sizeof(ushort)))
-        };
-
-        fixed (Vector3* vertexPointer = vertices) {
-            Buffer.MemoryCopy(vertexPointer, mesh.Vertices, (long)vertices.Length * 3 * sizeof(float), (long)vertices.Length * 3 * sizeof(float));
-        }
-
-        fixed (Vector3* normalPointer = normals) {
-            Buffer.MemoryCopy(normalPointer, mesh.Normals, (long)normals.Length * 3 * sizeof(float), (long)normals.Length * 3 * sizeof(float));
-        }
-
-        fixed (Vector2* texCoordPointer = texCoords) {
-            Buffer.MemoryCopy(texCoordPointer, mesh.TexCoords, (long)texCoords.Length * 2 * sizeof(float), (long)texCoords.Length * 2 * sizeof(float));
-        }
-
-        for (var i = 0; i < indices.Length; i++) {
-            mesh.Indices[i] = (ushort)indices[i];
-        }
-
-        GenMeshTangents(ref mesh);
-        UploadMesh(ref mesh, false);
-        return mesh;
-    }
-
     private void UpdateAnimationHierarchy(ModelNodeData node, AnimationClipData clip, double time, in Matrix4x4 parentTransform, in Matrix4x4 rigidDriverTransform, in Matrix4x4 globalInverse, Dictionary<string, List<BoneInfoData>> boneMap) {
 
         var nodeTransform = node.Transformation;
@@ -533,24 +510,24 @@ internal sealed class ModelData(string path) : SharedData {
         }
     }
 
-    private static unsafe void SkinMesh(ModelMeshData mesh, List<BoneInfoData> bones) {
+    private static void SkinMesh(MeshData mesh, List<BoneInfoData> bones) {
 
-        if (!mesh.UsesSkinning) {
+        if (!mesh.UsesSkinning || mesh.BaseVertices == null || mesh.BaseNormals == null || mesh.AnimatedVertices == null || mesh.AnimatedNormals == null || mesh.BoneData == null) {
             return;
         }
 
-        Parallel.For(0, mesh.Vertices.Length, i => {
+        Parallel.For(0, mesh.BaseVertices.Length, i => {
             var boneData = mesh.BoneData[i];
             var totalWeight = boneData.Weight0 + boneData.Weight1 + boneData.Weight2 + boneData.Weight3;
 
             if (totalWeight < 0.001f) {
-                mesh.AnimatedVertices[i] = mesh.Vertices[i];
-                mesh.AnimatedNormals[i] = mesh.Normals[i];
+                mesh.AnimatedVertices[i] = mesh.BaseVertices[i];
+                mesh.AnimatedNormals[i] = mesh.BaseNormals[i];
                 return;
             }
 
-            var vertex = mesh.Vertices[i];
-            var normal = mesh.Normals[i];
+            var vertex = mesh.BaseVertices[i];
+            var normal = mesh.BaseNormals[i];
             var finalVertex = Vector3.Zero;
             var finalNormal = Vector3.Zero;
 
@@ -560,7 +537,7 @@ internal sealed class ModelData(string path) : SharedData {
             AccumulateWeight(boneData.Bone3, boneData.Weight3 / totalWeight);
 
             mesh.AnimatedVertices[i] = finalVertex;
-            mesh.AnimatedNormals[i] = finalNormal.LengthSquared() > 0 ? Vector3.Normalize(finalNormal) : mesh.Normals[i];
+            mesh.AnimatedNormals[i] = finalNormal.LengthSquared() > 0 ? Vector3.Normalize(finalNormal) : mesh.BaseNormals[i];
 
             void AccumulateWeight(int boneIndex, float weight) {
 
@@ -574,56 +551,41 @@ internal sealed class ModelData(string path) : SharedData {
             }
         });
 
-        fixed (Vector3* vertexPointer = mesh.AnimatedVertices) {
-            Buffer.MemoryCopy(vertexPointer, mesh.Mesh.Vertices, (long)mesh.AnimatedVertices.Length * 3 * sizeof(float), (long)mesh.AnimatedVertices.Length * 3 * sizeof(float));
-        }
-
-        fixed (Vector3* normalPointer = mesh.AnimatedNormals) {
-            Buffer.MemoryCopy(normalPointer, mesh.Mesh.Normals, (long)mesh.AnimatedNormals.Length * 3 * sizeof(float), (long)mesh.AnimatedNormals.Length * 3 * sizeof(float));
-        }
-
-        UpdateMeshBuffer(mesh.Mesh, 0, mesh.Mesh.Vertices, mesh.AnimatedVertices.Length * 3 * sizeof(float), 0);
-        UpdateMeshBuffer(mesh.Mesh, 2, mesh.Mesh.Normals, mesh.AnimatedNormals.Length * 3 * sizeof(float), 0);
+        mesh.UploadAnimatedGeometry();
     }
 
-    private void UpdateRigidMesh(ModelMeshData mesh) {
+    private void UpdateRigidMesh(MeshData mesh) {
 
         if (mesh.MeshIndex < 0 ||
             mesh.MeshIndex >= bindMeshNodeTransforms.Length ||
             mesh.MeshIndex >= currentMeshNodeTransforms.Length ||
+            mesh.BaseVertices == null ||
+            mesh.BaseNormals == null ||
+            mesh.AnimatedVertices == null ||
+            mesh.AnimatedNormals == null ||
             !TryBuildRigidDeltaTransform(bindMeshNodeTransforms[mesh.MeshIndex], currentMeshNodeTransforms[mesh.MeshIndex], out var deltaTransform)) {
 
             return;
         }
 
-        for (var i = 0; i < mesh.Vertices.Length; i++) {
-            mesh.AnimatedVertices[i] = Vector3.Transform(mesh.Vertices[i], deltaTransform);
-            var transformedNormal = Vector3.TransformNormal(mesh.Normals[i], deltaTransform);
-            mesh.AnimatedNormals[i] = transformedNormal.LengthSquared() > 0 ? Vector3.Normalize(transformedNormal) : mesh.Normals[i];
+        for (var i = 0; i < mesh.BaseVertices.Length; i++) {
+            mesh.AnimatedVertices[i] = Vector3.Transform(mesh.BaseVertices[i], deltaTransform);
+            var transformedNormal = Vector3.TransformNormal(mesh.BaseNormals[i], deltaTransform);
+            mesh.AnimatedNormals[i] = transformedNormal.LengthSquared() > 0 ? Vector3.Normalize(transformedNormal) : mesh.BaseNormals[i];
         }
 
-        UploadAnimatedMesh(mesh);
+        mesh.UploadAnimatedGeometry();
     }
 
-    private static void ResetRigidMesh(ModelMeshData mesh) {
+    private static void ResetRigidMesh(MeshData mesh) {
 
-        Array.Copy(mesh.Vertices, mesh.AnimatedVertices, mesh.Vertices.Length);
-        Array.Copy(mesh.Normals, mesh.AnimatedNormals, mesh.Normals.Length);
-        UploadAnimatedMesh(mesh);
-    }
-
-    private static unsafe void UploadAnimatedMesh(ModelMeshData mesh) {
-
-        fixed (Vector3* vertexPointer = mesh.AnimatedVertices) {
-            Buffer.MemoryCopy(vertexPointer, mesh.Mesh.Vertices, (long)mesh.AnimatedVertices.Length * 3 * sizeof(float), (long)mesh.AnimatedVertices.Length * 3 * sizeof(float));
+        if (mesh.BaseVertices == null || mesh.BaseNormals == null || mesh.AnimatedVertices == null || mesh.AnimatedNormals == null) {
+            return;
         }
 
-        fixed (Vector3* normalPointer = mesh.AnimatedNormals) {
-            Buffer.MemoryCopy(normalPointer, mesh.Mesh.Normals, (long)mesh.AnimatedNormals.Length * 3 * sizeof(float), (long)mesh.AnimatedNormals.Length * 3 * sizeof(float));
-        }
-
-        UpdateMeshBuffer(mesh.Mesh, 0, mesh.Mesh.Vertices, mesh.AnimatedVertices.Length * 3 * sizeof(float), 0);
-        UpdateMeshBuffer(mesh.Mesh, 2, mesh.Mesh.Normals, mesh.AnimatedNormals.Length * 3 * sizeof(float), 0);
+        Array.Copy(mesh.BaseVertices, mesh.AnimatedVertices, mesh.BaseVertices.Length);
+        Array.Copy(mesh.BaseNormals, mesh.AnimatedNormals, mesh.BaseNormals.Length);
+        mesh.UploadAnimatedGeometry();
     }
 
     private static Matrix4x4 GetInterpolatedTransform(AnimationChannelData channel, double time, Matrix4x4 bindPose) {
@@ -685,15 +647,6 @@ internal sealed class ModelData(string path) : SharedData {
         return Math.Clamp((float)((time - current.Time) / length), 0f, 1f);
     }
 
-    private static Matrix4x4 CreateTransformMatrix(Vector3 position, Vector3 rotationDegrees, Vector3 scale) {
-
-        var positionMatrix = Raymath.MatrixTranslate(position.X, position.Y, position.Z);
-        var rotationMatrix = Raymath.QuaternionToMatrix(Raymath.QuaternionFromEuler(rotationDegrees.Z * DEG2RAD, rotationDegrees.Y * DEG2RAD, rotationDegrees.X * DEG2RAD));
-        var scaleMatrix = Raymath.MatrixScale(scale.X, scale.Y, scale.Z);
-
-        return Raymath.MatrixMultiply(Raymath.MatrixMultiply(scaleMatrix, rotationMatrix), positionMatrix);
-    }
-
     private static bool TryBuildRigidDeltaTransform(Matrix4x4 bindTransform, Matrix4x4 currentTransform, out Matrix4x4 deltaTransform) {
 
         if (!Matrix4x4.Decompose(bindTransform, out _, out var bindRotation, out var bindTranslation)) {
@@ -752,40 +705,6 @@ internal sealed class ModelData(string path) : SharedData {
     }
 }
 
-internal sealed class ModelMeshData(
-    Mesh mesh,
-    Material material,
-    int materialIndex,
-    int meshIndex,
-    Vector3[] vertices,
-    Vector3[] normals,
-    Vector3[] animatedVertices,
-    Vector3[] animatedNormals,
-    Vector2[] texCoords,
-    uint[] indices,
-    VertexBoneData[] boneData,
-    bool usesSkinning) {
-
-    public Mesh Mesh = mesh;
-    public Material FallbackMaterial = material;
-    public readonly int MaterialIndex = materialIndex;
-    public readonly int MeshIndex = meshIndex;
-    public readonly Vector3[] Vertices = vertices;
-    public readonly Vector3[] Normals = normals;
-    public readonly Vector3[] AnimatedVertices = animatedVertices;
-    public readonly Vector3[] AnimatedNormals = animatedNormals;
-    public Vector2[] TexCoords = texCoords;
-    public uint[] Indices = indices;
-    public readonly VertexBoneData[] BoneData = boneData;
-    public readonly bool UsesSkinning = usesSkinning;
-
-    public void Unload() {
-
-        UnloadMaterial(FallbackMaterial);
-        UnloadMesh(Mesh);
-    }
-}
-
 internal struct VertexBoneData {
 
     public int Bone0;
@@ -817,14 +736,6 @@ internal struct VertexBoneData {
             Weight3 = weight;
         }
     }
-}
-
-internal sealed class BoneInfoData {
-
-    public string Name = "";
-    public int Index;
-    public Matrix4x4 Offset;
-    public Matrix4x4 FinalTransformation;
 }
 
 internal sealed class ModelNodeData {
