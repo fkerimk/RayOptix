@@ -1,6 +1,13 @@
-.*/
+# dotnet
 bin/
 obj/
-external/
+Folder.DotSettings.user
+
+# cpp
 native/build
-#Folder.DotSettings.user
+
+# external
+external/
+
+# other
+.*/
