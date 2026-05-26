@@ -563,13 +563,13 @@ internal sealed class ModelData(string filePath) : SharedData {
             var finalVertex = Vector3.Zero;
             var finalNormal = Vector3.Zero;
 
-            AccumulateWeight(boneData.Bone0, boneData.Weight0);
-            AccumulateWeight(boneData.Bone1, boneData.Weight1);
-            AccumulateWeight(boneData.Bone2, boneData.Weight2);
-            AccumulateWeight(boneData.Bone3, boneData.Weight3);
+            AccumulateWeight(boneData.Bone0, boneData.Weight0 / totalWeight);
+            AccumulateWeight(boneData.Bone1, boneData.Weight1 / totalWeight);
+            AccumulateWeight(boneData.Bone2, boneData.Weight2 / totalWeight);
+            AccumulateWeight(boneData.Bone3, boneData.Weight3 / totalWeight);
 
             mesh.AnimatedVertices[i] = finalVertex;
-            mesh.AnimatedNormals[i] = Vector3.Normalize(finalNormal);
+            mesh.AnimatedNormals[i] = finalNormal.LengthSquared() > 0 ? Vector3.Normalize(finalNormal) : mesh.Normals[i];
 
             void AccumulateWeight(int boneIndex, float weight) {
 
@@ -607,7 +607,8 @@ internal sealed class ModelData(string filePath) : SharedData {
 
         for (var i = 0; i < mesh.Vertices.Length; i++) {
             mesh.AnimatedVertices[i] = Vector3.Transform(mesh.Vertices[i], deltaTransform);
-            mesh.AnimatedNormals[i] = Vector3.Normalize(Vector3.TransformNormal(mesh.Normals[i], deltaTransform));
+            var transformedNormal = Vector3.TransformNormal(mesh.Normals[i], deltaTransform);
+            mesh.AnimatedNormals[i] = transformedNormal.LengthSquared() > 0 ? Vector3.Normalize(transformedNormal) : mesh.Normals[i];
         }
 
         UploadAnimatedMesh(mesh);
