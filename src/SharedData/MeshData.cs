@@ -141,10 +141,12 @@ internal class MeshData : SharedData {
         var geometryVertices = new float[Vertices.Length];
         var geometryNormals = new float[Normals.Length];
         var geometryTexCoords = new float[TexCoords.Length];
-        var normalMatrix = matrix;
-        normalMatrix.M41 = 0;
-        normalMatrix.M42 = 0;
-        normalMatrix.M43 = 0;
+        var numericsMatrix = Matrix4x4.Transpose(matrix);
+        var normalMatrix = numericsMatrix;
+
+        if (Matrix4x4.Invert(numericsMatrix, out var inverseMatrix)) {
+            normalMatrix = Matrix4x4.Transpose(inverseMatrix);
+        }
 
         for (var index = 0; index < Vertices.Length; index += 3) {
             var position = Raymath.Vector3Transform(new Vector3(
@@ -152,10 +154,13 @@ internal class MeshData : SharedData {
                 Vertices[index + 1],
                 Vertices[index + 2]), matrix);
 
-            var normal = Vector3.Normalize(Raymath.Vector3Transform(new Vector3(
+            var transformedNormal = Vector3.TransformNormal(new Vector3(
                 Normals[index],
                 Normals[index + 1],
-                Normals[index + 2]), normalMatrix));
+                Normals[index + 2]), normalMatrix);
+            var normal = transformedNormal.LengthSquared() > 0.0f
+                ? Vector3.Normalize(transformedNormal)
+                : Vector3.UnitY;
 
             geometryVertices[index] = position.X;
             geometryVertices[index + 1] = position.Y;
