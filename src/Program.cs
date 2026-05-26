@@ -37,6 +37,13 @@ internal static class Program {
         var cubeMaterial = new MaterialData { Color = new Vector4(0.92f, 0.36f, 0.24f, 1) };
         cubeMaterial.Build();
 
+        var robotModel = new ModelData("res/model/robot.fbx") {
+            Position = new Vector3(0, 5, 0),
+            RotationDegrees = new Vector3(0, 180, 0),
+            Scale = Vector3.One * 0.01f
+        };
+        robotModel.Build();
+
         var raylibRenderer = new RaylibRenderer(camera);
         var optixRenderer = new OptixRenderer(camera);
 
@@ -82,6 +89,7 @@ internal static class Program {
             camera.Fov -= GetMouseWheelMove() * 5;
             
             camera.Build();
+            robotModel.UpdateAnimation(GetFrameTime());
             
             if (IsKeyPressed(KeyboardKey.Space)) {
 
@@ -102,6 +110,10 @@ internal static class Program {
             activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(0, MathF.Sin((float)GetTime()) + 2.5f, -1), new Vector3(0,  (float)GetTime() * 90, 0), Vector3.One));
             activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(0, MathF.Cos((float)GetTime()) + 2.5f,  1), new Vector3(0, -(float)GetTime() * 90, 0), Vector3.One));
             //}
+
+            if (activeRenderer is RaylibRenderer) {
+                robotModel.DrawRaylib();
+            }
             
             activeRenderer.End();
             
@@ -114,6 +126,7 @@ internal static class Program {
 
         cubeMaterial.Unload();
         cubeMesh.Unload();
+        robotModel.Unload();
         
         foreach (var renderer in renderers) renderer.Shutdown();
         
