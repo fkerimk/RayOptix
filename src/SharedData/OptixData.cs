@@ -1,18 +1,18 @@
 using System.Runtime.InteropServices;
 
-internal sealed class OptixGeometry(float[] vertices, float[] normals, float[] texCoords, ushort[] indices) {
+internal sealed class OptixGeometry(float[] vertices, float[] normals, float[] texCoords, uint[] indices) {
 
     public readonly float[] Vertices = vertices;
     public readonly float[] Normals = normals;
     public readonly float[] TexCoords = texCoords;
-    public readonly ushort[] Indices = indices;
+    public readonly uint[] Indices = indices;
 }
 
 internal sealed class OptixScene(
     float[] vertices,
     float[] normals,
     float[] texCoords,
-    ushort[] indices,
+    uint[] indices,
     uint[] triangleMaterialIndices,
     float[] materialParameters,
     int[] materialAlbedoTextureIndices,
@@ -22,7 +22,7 @@ internal sealed class OptixScene(
     public readonly float[] Vertices = vertices;
     public readonly float[] Normals = normals;
     public readonly float[] TexCoords = texCoords;
-    public readonly ushort[] Indices = indices;
+    public readonly uint[] Indices = indices;
     public readonly uint[] TriangleMaterialIndices = triangleMaterialIndices;
     public readonly float[] MaterialParameters = materialParameters;
     public readonly int[] MaterialAlbedoTextureIndices = materialAlbedoTextureIndices;

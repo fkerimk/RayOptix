@@ -85,12 +85,12 @@ struct HitGroupData {
 };
 
 struct TriangleIndices {
-    uint16_t x;
-    uint16_t y;
-    uint16_t z;
+    uint32_t x;
+    uint32_t y;
+    uint32_t z;
 };
 
-static_assert(sizeof(TriangleIndices) == 6, "TriangleIndices must stay tightly packed.");
+static_assert(sizeof(TriangleIndices) == 12, "TriangleIndices must stay tightly packed.");
 
 template <typename T>
 struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) SbtRecord {
@@ -303,7 +303,7 @@ public:
         int normalFloatCount,
         const float* texCoords,
         int texCoordFloatCount,
-        const uint16_t* indices,
+        const uint32_t* indices,
         int indexCount,
         const uint32_t* triangleMaterialIndices,
         int triangleMaterialIndexCount,
@@ -845,7 +845,7 @@ private:
         const float* normals,
         const float* texCoords,
         unsigned int vertexCount,
-        const uint16_t* indices,
+        const uint32_t* indices,
         unsigned int triangleCount,
         const uint32_t* triangleMaterialIndices,
         const float* materialParameters,
@@ -907,7 +907,7 @@ private:
         buildInput.triangleArray.vertexStrideInBytes = sizeof(float3);
         buildInput.triangleArray.numVertices = vertexCount;
         buildInput.triangleArray.vertexBuffers = &vertexBuffer_;
-        buildInput.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_UNSIGNED_SHORT3;
+        buildInput.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
         buildInput.triangleArray.indexStrideInBytes = sizeof(TriangleIndices);
         buildInput.triangleArray.numIndexTriplets = triangleCount;
         buildInput.triangleArray.indexBuffer = indexBuffer_;
@@ -1380,7 +1380,7 @@ bool RenderRendererHandle(
     int normalFloatCount,
     const float* texCoords,
     int texCoordFloatCount,
-    const uint16_t* indices,
+    const uint32_t* indices,
     int indexCount,
     const uint32_t* triangleMaterialIndices,
     int triangleMaterialIndexCount,

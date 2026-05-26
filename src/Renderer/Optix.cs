@@ -417,7 +417,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         var vertices = new List<float>();
         var normals = new List<float>();
         var texCoords = new List<float>();
-        var indices = new List<ushort>();
+        var indices = new List<uint>();
         var triangleMaterialIndices = new List<uint>();
         var materialParameters = new List<float>();
         var materialAlbedoTextureIndices = new List<int>();
@@ -447,7 +447,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             }
 
             for (var index = 0; index < geometry.Indices.Length; index++) {
-                indices.Add((ushort)(geometry.Indices[index] + vertexOffset));
+                indices.Add(geometry.Indices[index] + (uint)vertexOffset);
             }
 
             for (var triangleIndex = 0; triangleIndex < geometry.Indices.Length / 3; triangleIndex++) {
@@ -658,7 +658,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             int normalFloatCount,
             float[] texCoords,
             int texCoordFloatCount,
-            ushort[] indices,
+            uint[] indices,
             int indexCount,
             uint[] triangleMaterialIndices,
             int triangleMaterialIndexCount,

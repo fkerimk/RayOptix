@@ -77,7 +77,7 @@ bool RenderRendererHandle(
     int normalFloatCount,
     const float* texCoords,
     int texCoordFloatCount,
-    const uint16_t* indices,
+    const uint32_t* indices,
     int indexCount,
     const uint32_t* triangleMaterialIndices,
     int triangleMaterialIndexCount,

@@ -9,7 +9,7 @@ internal class MeshData : SharedData {
     public readonly float[] Vertices;
     public readonly float[] Normals;
     public readonly float[] TexCoords;
-    public readonly ushort[] Indices;
+    public readonly uint[] Indices;
 
     public readonly int MaterialIndex;
     public readonly int MeshIndex;
@@ -22,7 +22,7 @@ internal class MeshData : SharedData {
 
     public Material? FallbackMaterial;
     public Mesh? RaylibMesh;
-    public MeshData(int vertexCount, int triangleCount, float[] vertices, float[] normals, float[] texCoords, ushort[] indices) {
+    public MeshData(int vertexCount, int triangleCount, float[] vertices, float[] normals, float[] texCoords, uint[] indices) {
 
         VertexCount = vertexCount;
         TriangleCount = triangleCount;
@@ -50,11 +50,7 @@ internal class MeshData : SharedData {
         Vertices = MemoryMarshal.Cast<Vector3, float>(vertices.AsSpan()).ToArray();
         Normals = MemoryMarshal.Cast<Vector3, float>(normals.AsSpan()).ToArray();
         TexCoords = MemoryMarshal.Cast<Vector2, float>(texCoords.AsSpan()).ToArray();
-        Indices = new ushort[indices.Length];
-
-        for (var i = 0; i < indices.Length; i++) {
-            Indices[i] = (ushort)indices[i];
-        }
+        Indices = indices;
 
         MaterialIndex = materialIndex;
         MeshIndex = meshIndex;
@@ -81,7 +77,8 @@ internal class MeshData : SharedData {
         Vertices.CopyTo(mesh.VerticesAs<float>());
         Normals.CopyTo(mesh.NormalsAs<float>());
         TexCoords.CopyTo(mesh.TexCoordsAs<float>());
-        Indices.CopyTo(mesh.IndicesAs<ushort>());
+        var raylibIndices = Array.ConvertAll(Indices, i => (ushort)i);
+        raylibIndices.CopyTo(mesh.IndicesAs<ushort>());
 
         Raylib.UploadMesh(ref mesh, false);
 

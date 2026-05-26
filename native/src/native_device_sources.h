@@ -91,9 +91,9 @@ struct HitGroupData {
 };
 
 struct TriangleIndices {
-    unsigned short x;
-    unsigned short y;
-    unsigned short z;
+    unsigned int x;
+    unsigned int y;
+    unsigned int z;
 };
 
 struct Payload {
