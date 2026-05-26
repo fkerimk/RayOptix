@@ -140,6 +140,23 @@ function ensure_windows_dotnet
     require_file "$WINDOWS_DOTNET_EXE" "Windows .NET SDK host"
 end
 
+function clear_stale_windows_cmake_cache
+    set cache_file "$NATIVE_BUILD_DIR/CMakeCache.txt"
+
+    if not test -f "$cache_file"
+        return 0
+    end
+
+    set cached_llvm_root (string replace -r '^ROPTIX_LLVM_MINGW_ROOT(:[A-Z]+)?=' '' -- (string match -r '^ROPTIX_LLVM_MINGW_ROOT(:[A-Z]+)?=.*$' < "$cache_file"))
+    set cached_cxx (string replace -r '^CMAKE_CXX_COMPILER:FILEPATH=' '' -- (string match -r '^CMAKE_CXX_COMPILER:FILEPATH=.*$' < "$cache_file"))
+
+    if test "$cached_llvm_root" != "$LLVM_MINGW_ROOT"; or begin test -n "$cached_cxx"; and not test -e "$cached_cxx"; end
+        echo "Clearing stale Windows CMake cache in $NATIVE_BUILD_DIR" >&2
+        rm -f "$cache_file"
+        rm -rf "$NATIVE_BUILD_DIR/CMakeFiles"
+    end
+end
+
 function ensure_nvidia_libs_source
     ensure_valid_archive \
         "$NVIDIA_LIBS_ARCHIVE" \
@@ -374,6 +391,8 @@ end
 set ALL_RUNTIME_DLLS $WINDOWS_CUDA_RUNTIME_DLLS $LLVM_MINGW_RUNTIME_DLLS
 set NATIVE_RUNTIME_DEPENDENCY_PATHS (string join ';' $ALL_RUNTIME_DLLS)
 set WINDOWS_NATIVE_LIBRARY_PATH "$NATIVE_BUILD_DIR/RayOptixNative.dll"
+
+clear_stale_windows_cmake_cache
 
 cmake -S "$SCRIPT_DIR/native" \
     -B "$NATIVE_BUILD_DIR" \
