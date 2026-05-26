@@ -415,7 +415,8 @@ set -lx ROPTIX_NATIVE_RUNTIME_DEPS "$NATIVE_RUNTIME_DEPENDENCY_PATHS"
     /p:NuGetAudit=false \
     /p:SkipNativeOptixBuild=true \
     /p:NativeLibraryPath="$WINDOWS_NATIVE_LIBRARY_PATH" \
-    /p:NativeRuntimeDependencyPaths="$NATIVE_RUNTIME_DEPENDENCY_PATHS" \
+    /p:GenerateAssemblyInfo=false \
+    /p:GenerateTargetFrameworkAttribute=false \
     /p:BaseIntermediateOutputPath="$WINDOWS_MSBUILD_OBJ_ROOT" \
     /p:MSBuildProjectExtensionsPath="$WINDOWS_MSBUILD_OBJ_ROOT"
 if test $status -ne 0
@@ -427,7 +428,8 @@ end
     /p:NuGetAudit=false \
     /p:SkipNativeOptixBuild=true \
     /p:NativeLibraryPath="$WINDOWS_NATIVE_LIBRARY_PATH" \
-    /p:NativeRuntimeDependencyPaths="$NATIVE_RUNTIME_DEPENDENCY_PATHS" \
+    /p:GenerateAssemblyInfo=false \
+    /p:GenerateTargetFrameworkAttribute=false \
     /p:BaseIntermediateOutputPath="$WINDOWS_MSBUILD_OBJ_ROOT" \
     /p:MSBuildProjectExtensionsPath="$WINDOWS_MSBUILD_OBJ_ROOT" \
     $argv
