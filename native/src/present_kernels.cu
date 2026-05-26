@@ -7,7 +7,7 @@ static __forceinline__ __device__ unsigned char ToneMapChannel(float value, floa
 }
 
 extern "C" __global__ void ToneMapToSurface(
-    const float4* hdrPixels,
+    const float4 *hdrPixels,
     cudaSurfaceObject_t outputSurface,
     unsigned int sourceWidth,
     unsigned int sourceHeight,

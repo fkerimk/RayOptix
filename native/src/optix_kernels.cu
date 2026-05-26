@@ -48,14 +48,14 @@ struct NativeMaterial {
 };
 
 struct LaunchParams {
-    float4* beauty;
-    float4* accumulation;
-    float* depth;
-    float4* worldPosition;
-    float4* normals;
-    float* roughness;
-    float4* diffuseAlbedo;
-    float4* specularAlbedo;
+    float4 *beauty;
+    float4 *accumulation;
+    float *depth;
+    float4 *worldPosition;
+    float4 *normals;
+    float *roughness;
+    float4 *diffuseAlbedo;
+    float4 *specularAlbedo;
     unsigned long long materials;
     unsigned long long texturePixels;
     unsigned long long textureMetadata;
@@ -177,15 +177,15 @@ static __forceinline__ __device__ unsigned int Tea(unsigned int value0, unsigned
     return value0;
 }
 
-static __forceinline__ __device__ float Random(unsigned int& seed) {
+static __forceinline__ __device__ float Random(unsigned int &seed) {
     seed = 1664525u * seed + 1013904223u;
     return (seed & 0x00ffffff) / 16777216.0f;
 }
 
-static __forceinline__ __device__ Payload* GetPayloadPointer() {
+static __forceinline__ __device__ Payload *GetPayloadPointer() {
     const unsigned long long low = optixGetPayload_0();
     const unsigned long long high = optixGetPayload_1();
-    return reinterpret_cast<Payload*>((high << 32) | low);
+    return reinterpret_cast<Payload *>((high << 32) | low);
 }
 
 static __forceinline__ __device__ float MaxComponent(float3 value) {
@@ -200,15 +200,16 @@ static __forceinline__ __device__ float WrapUv(float value) {
     return value - floorf(value);
 }
 
-static __forceinline__ __device__ float3 SampleAlbedo(const NativeMaterial& material, float2 texCoord) {
+static __forceinline__ __device__ float3 SampleAlbedo(const NativeMaterial &material, float2 texCoord) {
     const float3 baseColor = make_float3(material.albedoR, material.albedoG, material.albedoB);
 
-    if (material.albedoTextureIndex < 0 || static_cast<unsigned int>(material.albedoTextureIndex) >= params.textureCount) {
+    if (material.albedoTextureIndex < 0 || static_cast<unsigned int>(material.albedoTextureIndex) >= params.
+        textureCount) {
         return baseColor;
     }
 
-    const int* textureMetadata = reinterpret_cast<const int*>(params.textureMetadata);
-    const uchar4* texturePixels = reinterpret_cast<const uchar4*>(params.texturePixels);
+    const int *textureMetadata = reinterpret_cast<const int *>(params.textureMetadata);
+    const uchar4 *texturePixels = reinterpret_cast<const uchar4 *>(params.texturePixels);
     const int metadataIndex = material.albedoTextureIndex * 3;
     const int pixelOffset = textureMetadata[metadataIndex];
     const int textureWidth = textureMetadata[metadataIndex + 1];
@@ -232,10 +233,12 @@ static __forceinline__ __device__ float3 SampleAlbedo(const NativeMaterial& mate
 }
 
 static __forceinline__ __device__ float3 BuildTangent(float3 normal) {
-    return Normalize(fabsf(normal.x) > 0.1f ? Cross(make_float3(0.0f, 1.0f, 0.0f), normal) : Cross(make_float3(1.0f, 0.0f, 0.0f), normal));
+    return Normalize(fabsf(normal.x) > 0.1f
+                         ? Cross(make_float3(0.0f, 1.0f, 0.0f), normal)
+                         : Cross(make_float3(1.0f, 0.0f, 0.0f), normal));
 }
 
-static __forceinline__ __device__ float3 SampleCone(float3 direction, float angleRadians, unsigned int& seed) {
+static __forceinline__ __device__ float3 SampleCone(float3 direction, float angleRadians, unsigned int &seed) {
     if (angleRadians <= 1e-6f) {
         return Normalize(direction);
     }
@@ -256,7 +259,7 @@ static __forceinline__ __device__ float3 SampleCone(float3 direction, float angl
         direction * cosTheta);
 }
 
-static __forceinline__ __device__ float3 SampleHemisphere(float3 normal, unsigned int& seed) {
+static __forceinline__ __device__ float3 SampleHemisphere(float3 normal, unsigned int &seed) {
     const float u1 = Random(seed);
     const float u2 = Random(seed);
     const float radius = sqrtf(u1);
@@ -281,7 +284,7 @@ static __forceinline__ __device__ unsigned char ToneMapChannel(float value, floa
     return static_cast<unsigned char>(fminf(fmaxf(corrected * 255.0f, 0.0f), 255.0f));
 }
 
-static __forceinline__ __device__ float4 MulPoint(const float* matrix, float3 point) {
+static __forceinline__ __device__ float4 MulPoint(const float *matrix, float3 point) {
     return make_float4(
         matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3],
         matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
@@ -295,7 +298,8 @@ static __forceinline__ __device__ float3 GetSkyColor(float3 direction) {
     }
 
     const float t = 0.5f * (direction.y + 1.0f);
-    const float3 skyBottom = make_float3(params.settings.skyBottomR, params.settings.skyBottomG, params.settings.skyBottomB);
+    const float3 skyBottom = make_float3(params.settings.skyBottomR, params.settings.skyBottomG,
+                                         params.settings.skyBottomB);
     const float3 skyTop = make_float3(params.settings.skyTopR, params.settings.skyTopG, params.settings.skyTopB);
     return Lerp(skyBottom, skyTop, t);
 }
@@ -329,7 +333,7 @@ static __forceinline__ __device__ int TraceOcclusion(float3 origin, float3 direc
 }
 
 extern "C" __global__ void __miss__ms() {
-    Payload* payload = GetPayloadPointer();
+    Payload *payload = GetPayloadPointer();
     payload->hit = 0;
     payload->hitNormal = make_float3(0.0f, 0.0f, 0.0f);
     payload->hitPosition = make_float3(0.0f, 0.0f, 0.0f);
@@ -338,11 +342,11 @@ extern "C" __global__ void __miss__ms() {
 }
 
 extern "C" __global__ void __closesthit__ch() {
-    const HitGroupData* hitData = reinterpret_cast<const HitGroupData*>(optixGetSbtDataPointer());
-    const float3* vertices = reinterpret_cast<const float3*>(hitData->vertices);
-    const float3* normals = reinterpret_cast<const float3*>(hitData->normals);
-    const float2* texCoords = reinterpret_cast<const float2*>(hitData->texCoords);
-    const TriangleIndices* indices = reinterpret_cast<const TriangleIndices*>(hitData->indices);
+    const HitGroupData *hitData = reinterpret_cast<const HitGroupData *>(optixGetSbtDataPointer());
+    const float3 *vertices = reinterpret_cast<const float3 *>(hitData->vertices);
+    const float3 *normals = reinterpret_cast<const float3 *>(hitData->normals);
+    const float2 *texCoords = reinterpret_cast<const float2 *>(hitData->texCoords);
+    const TriangleIndices *indices = reinterpret_cast<const TriangleIndices *>(hitData->indices);
 
     const unsigned int primitiveIndex = optixGetPrimitiveIndex();
     const TriangleIndices triangle = indices[primitiveIndex];
@@ -374,7 +378,7 @@ extern "C" __global__ void __closesthit__ch() {
     const float3 direction = optixGetWorldRayDirection();
     const float distance = optixGetRayTmax();
 
-    Payload* payload = GetPayloadPointer();
+    Payload *payload = GetPayloadPointer();
     payload->hit = 1;
     payload->hitNormal = Normalize(facingNormal);
     payload->hitPosition = origin + direction * distance;
@@ -404,8 +408,10 @@ extern "C" __global__ void __raygen__rg() {
         const float jitterX = Random(seed);
         const float jitterY = Random(seed);
 
-        const float screenX = ((static_cast<float>(launchIndex.x) + jitterX) / static_cast<float>(launchDimensions.x)) * 2.0f - 1.0f;
-        const float screenY = ((static_cast<float>(launchIndex.y) + jitterY) / static_cast<float>(launchDimensions.y)) * 2.0f - 1.0f;
+        const float screenX = ((static_cast<float>(launchIndex.x) + jitterX) / static_cast<float>(launchDimensions.x)) *
+                              2.0f - 1.0f;
+        const float screenY = ((static_cast<float>(launchIndex.y) + jitterY) / static_cast<float>(launchDimensions.y)) *
+                              2.0f - 1.0f;
 
         float3 origin = eye;
         float3 direction = Normalize(
@@ -456,15 +462,19 @@ extern "C" __global__ void __raygen__rg() {
                     const float inverseW = fabsf(clip.w) > 1e-6f ? (1.0f / clip.w) : 0.0f;
                     const float ndcZ = clip.z * inverseW;
                     params.depth[pixelIndex] = fminf(fmaxf(ndcZ * 0.5f + 0.5f, 0.0f), 1.0f);
-                    params.worldPosition[pixelIndex] = make_float4(payload.hitPosition.x, payload.hitPosition.y, payload.hitPosition.z, 1.0f);
-                    const NativeMaterial* primaryMaterials = reinterpret_cast<const NativeMaterial*>(params.materials);
+                    params.worldPosition[pixelIndex] = make_float4(payload.hitPosition.x, payload.hitPosition.y,
+                                                                   payload.hitPosition.z, 1.0f);
+                    const NativeMaterial *primaryMaterials = reinterpret_cast<const NativeMaterial *>(params.materials);
                     const NativeMaterial primaryMaterial = primaryMaterials[payload.materialIndex];
                     const float primaryReflectivity = fminf(fmaxf(primaryMaterial.reflectivity, 0.0f), 1.0f);
                     const float3 primaryAlbedo = SampleAlbedo(primaryMaterial, payload.texCoord);
-                    params.normals[pixelIndex] = make_float4(payload.hitNormal.x, payload.hitNormal.y, payload.hitNormal.z, 0.0f);
+                    params.normals[pixelIndex] = make_float4(payload.hitNormal.x, payload.hitNormal.y,
+                                                             payload.hitNormal.z, 0.0f);
                     params.roughness[pixelIndex] = 1.0f - primaryReflectivity;
-                    params.diffuseAlbedo[pixelIndex] = make_float4(primaryAlbedo.x, primaryAlbedo.y, primaryAlbedo.z, 1.0f);
-                    params.specularAlbedo[pixelIndex] = make_float4(primaryReflectivity, primaryReflectivity, primaryReflectivity, 1.0f);
+                    params.diffuseAlbedo[pixelIndex] = make_float4(primaryAlbedo.x, primaryAlbedo.y, primaryAlbedo.z,
+                                                                   1.0f);
+                    params.specularAlbedo[pixelIndex] = make_float4(primaryReflectivity, primaryReflectivity,
+                                                                    primaryReflectivity, 1.0f);
                 }
             }
 
@@ -474,7 +484,7 @@ extern "C" __global__ void __raygen__rg() {
             }
 
             const float3 normal = Dot(payload.hitNormal, direction) < 0.0f ? payload.hitNormal : -payload.hitNormal;
-            const NativeMaterial* materials = reinterpret_cast<const NativeMaterial*>(params.materials);
+            const NativeMaterial *materials = reinterpret_cast<const NativeMaterial *>(params.materials);
             const NativeMaterial material = materials[payload.materialIndex];
             const float3 albedo = SampleAlbedo(material, payload.texCoord);
             const float opacity = fminf(fmaxf(material.opacity, 0.0f), 1.0f);
@@ -537,8 +547,8 @@ extern "C" __global__ void __raygen__rg() {
 
     if (params.settings.enableAccumulation != 0) {
         const float4 previous = params.frameIndex == 0
-            ? make_float4(0.0f, 0.0f, 0.0f, 0.0f)
-            : params.accumulation[pixelIndex];
+                                    ? make_float4(0.0f, 0.0f, 0.0f, 0.0f)
+                                    : params.accumulation[pixelIndex];
         const float3 sum = make_float3(previous.x, previous.y, previous.z) + sampleRadiance;
         params.accumulation[pixelIndex] = make_float4(sum.x, sum.y, sum.z, 0.0f);
         const float3 averaged = sum / static_cast<float>(params.frameIndex + 1u);
@@ -550,7 +560,7 @@ extern "C" __global__ void __raygen__rg() {
 }
 
 extern "C" __global__ void ToneMapToSurface(
-    const float4* hdrPixels,
+    const float4 *hdrPixels,
     cudaSurfaceObject_t outputSurface,
     int sourceWidth,
     int sourceHeight,

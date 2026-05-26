@@ -59,55 +59,59 @@ struct NativeFrameStats {
     int denoisedThisFrame;
 };
 
-bool CreateRendererHandle(int renderWidth, int renderHeight, int outputWidth, int outputHeight, void** handle, char* error, int errorCapacity);
-void DestroyRendererHandle(void* handle);
-void ReleaseRendererOutputTexture(void* handle, unsigned int textureId);
-bool ResizeRendererHandle(void* handle, int renderWidth, int renderHeight, int outputWidth, int outputHeight, char* error, int errorCapacity);
+bool CreateRendererHandle(int renderWidth, int renderHeight, int outputWidth, int outputHeight, void **handle,
+                          char *error, int errorCapacity);
+
+void DestroyRendererHandle(void *handle);
+
+void ReleaseRendererOutputTexture(void *handle, unsigned int textureId);
+
+bool ResizeRendererHandle(void *handle, int renderWidth, int renderHeight, int outputWidth, int outputHeight,
+                          char *error, int errorCapacity);
 
 bool UploadMeshRendererHandle(
-    void* handle,
+    void *handle,
     int meshId,
-    const float* vertices,
+    const float *vertices,
     int vertexFloatCount,
-    const float* normals,
+    const float *normals,
     int normalFloatCount,
-    const float* texCoords,
+    const float *texCoords,
     int texCoordFloatCount,
-    const uint32_t* indices,
+    const uint32_t *indices,
     int indexCount,
-    char* error,
+    char *error,
     int errorCapacity);
 
 bool UpdateMeshVerticesRendererHandle(
-    void* handle,
+    void *handle,
     int meshId,
-    const float* vertices,
+    const float *vertices,
     int vertexFloatCount,
-    char* error,
+    char *error,
     int errorCapacity);
 
 bool RenderInstancesRendererHandle(
-    void* handle,
+    void *handle,
     int renderWidth,
     int renderHeight,
     int outputWidth,
     int outputHeight,
-    NativeCamera camera,
-    NativeRenderSettings settings,
-    const int* meshIds,
+    const NativeCamera &camera,
+    const NativeRenderSettings &settings,
+    const int *meshIds,
     int instanceCount,
-    const int* materialIndices,
-    const float* transforms,
-    const float* materialParameters,
+    const int *materialIndices,
+    const float *transforms,
+    const float *materialParameters,
     int materialFloatCount,
-    const int32_t* materialAlbedoTextureIndices,
-    int materialTextureIndexCount,
-    const uint8_t* texturePixels,
+    const int32_t *materialAlbedoTextureIndices,
+    const uint8_t *texturePixels,
     int texturePixelByteCount,
-    const int32_t* textureMetadata,
+    const int32_t *textureMetadata,
     int textureMetadataCount,
     unsigned int frameIndex,
     unsigned int outputTextureId,
-    NativeFrameStats* stats,
-    char* error,
+    NativeFrameStats *stats,
+    char *error,
     int errorCapacity);
