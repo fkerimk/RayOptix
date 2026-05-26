@@ -133,41 +133,14 @@ internal class MeshData : SharedData {
         }
     }
 
-    public OptixGeometry CreateOptixGeometry(Matrix4x4 matrix) {
+    public OptixGeometry CreateOptixGeometry() {
 
         var geometryVertices = new float[Vertices.Length];
         var geometryNormals = new float[Normals.Length];
         var geometryTexCoords = new float[TexCoords.Length];
-        var numericsMatrix = Matrix4x4.Transpose(matrix);
-        var normalMatrix = numericsMatrix;
 
-        if (Matrix4x4.Invert(numericsMatrix, out var inverseMatrix)) {
-            normalMatrix = Matrix4x4.Transpose(inverseMatrix);
-        }
-
-        for (var index = 0; index < Vertices.Length; index += 3) {
-            var position = Raymath.Vector3Transform(new Vector3(
-                Vertices[index],
-                Vertices[index + 1],
-                Vertices[index + 2]), matrix);
-
-            var transformedNormal = Vector3.TransformNormal(new Vector3(
-                Normals[index],
-                Normals[index + 1],
-                Normals[index + 2]), normalMatrix);
-            var normal = transformedNormal.LengthSquared() > 0.0f
-                ? Vector3.Normalize(transformedNormal)
-                : Vector3.UnitY;
-
-            geometryVertices[index] = position.X;
-            geometryVertices[index + 1] = position.Y;
-            geometryVertices[index + 2] = position.Z;
-
-            geometryNormals[index] = normal.X;
-            geometryNormals[index + 1] = normal.Y;
-            geometryNormals[index + 2] = normal.Z;
-        }
-
+        Array.Copy(Vertices, geometryVertices, Vertices.Length);
+        Array.Copy(Normals, geometryNormals, Normals.Length);
         Array.Copy(TexCoords, geometryTexCoords, TexCoords.Length);
 
         return new OptixGeometry(geometryVertices, geometryNormals, geometryTexCoords, Indices);

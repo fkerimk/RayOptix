@@ -65,7 +65,7 @@ struct LaunchParams {
     Float3 cameraUp;
     float tanHalfFovY;
     NativeRenderSettings settings;
-    OptixTraversableHandle handle;
+    OptixTraversableHandle iasHandle;
     unsigned int frameIndex;
     float currentViewProjection[16];
 };
@@ -80,8 +80,23 @@ struct HitGroupData {
     CUdeviceptr normals;
     CUdeviceptr texCoords;
     CUdeviceptr indices;
-    CUdeviceptr triangleMaterialIndices;
     CUdeviceptr materials;
+};
+
+struct MeshGpuData {
+    CUdeviceptr vertexBuffer = 0;
+    CUdeviceptr normalBuffer = 0;
+    CUdeviceptr texCoordBuffer = 0;
+    CUdeviceptr indexBuffer = 0;
+    CUdeviceptr gasOutputBuffer = 0;
+    OptixTraversableHandle gasHandle = 0;
+    size_t vertexCapacity = 0;
+    size_t normalCapacity = 0;
+    size_t texCoordCapacity = 0;
+    size_t indexCapacity = 0;
+    size_t gasOutputCapacity = 0;
+    unsigned int vertexCount = 0;
+    unsigned int triangleCount = 0;
 };
 
 struct TriangleIndices {
@@ -294,136 +309,7 @@ public:
         SetupDenoiser();
     }
 
-    void Render(
-        const NativeCamera& camera,
-        const NativeRenderSettings& settings,
-        const float* vertices,
-        int vertexFloatCount,
-        const float* normals,
-        int normalFloatCount,
-        const float* texCoords,
-        int texCoordFloatCount,
-        const uint32_t* indices,
-        int indexCount,
-        const uint32_t* triangleMaterialIndices,
-        int triangleMaterialIndexCount,
-        const float* materialParameters,
-        int materialFloatCount,
-        const int32_t* materialAlbedoTextureIndices,
-        int materialTextureIndexCount,
-        const uint8_t* texturePixels,
-        int texturePixelByteCount,
-        const int32_t* textureMetadata,
-        int textureMetadataCount,
-        unsigned int frameIndex,
-        unsigned int outputTextureId,
-        NativeFrameStats* stats) {
-        const auto totalStart = std::chrono::steady_clock::now();
-        NativeFrameStats localStats{};
 
-        if (vertexFloatCount <= 0 || normalFloatCount != vertexFloatCount || texCoordFloatCount != (vertexFloatCount / 3) * 2 || indexCount <= 0 || (indexCount % 3) != 0) {
-            throw OptixError("Scene buffers are invalid.");
-        }
-
-        const auto vertexCount = static_cast<unsigned int>(vertexFloatCount / 3);
-        const auto triangleCount = static_cast<unsigned int>(indexCount / 3);
-        if (triangleMaterialIndexCount != static_cast<int>(triangleCount) ||
-            materialFloatCount <= 0 ||
-            (materialFloatCount % 5) != 0 ||
-            materialTextureIndexCount != (materialFloatCount / 5) ||
-            (texturePixelByteCount % 4) != 0 ||
-            (textureMetadataCount % 3) != 0) {
-            throw OptixError("Scene material buffers are invalid.");
-        }
-        if (outputTextureId == 0) {
-            throw OptixError("Output texture is invalid.");
-        }
-
-        EnsureOutputTextureInterop(outputTextureId);
-
-        const auto uploadStart = std::chrono::steady_clock::now();
-        UploadScene(
-            vertices,
-            normals,
-            texCoords,
-            vertexCount,
-            indices,
-            triangleCount,
-            triangleMaterialIndices,
-            materialParameters,
-            static_cast<unsigned int>(materialFloatCount / 5),
-            materialAlbedoTextureIndices,
-            texturePixels,
-            static_cast<unsigned int>(texturePixelByteCount / 4),
-            textureMetadata,
-            static_cast<unsigned int>(textureMetadataCount / 3));
-        localStats.uploadSceneMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart).count();
-
-        LaunchParams params{};
-        params.beauty = reinterpret_cast<float4*>(beautyBuffer_);
-        params.accumulation = reinterpret_cast<float4*>(accumulationBuffer_);
-        params.depth = reinterpret_cast<float*>(depthBuffer_);
-        params.worldPosition = reinterpret_cast<float4*>(worldPositionBuffer_);
-        params.normals = reinterpret_cast<float4*>(normalGuideBuffer_);
-        params.roughness = reinterpret_cast<float*>(roughnessGuideBuffer_);
-        params.diffuseAlbedo = reinterpret_cast<float4*>(diffuseAlbedoGuideBuffer_);
-        params.specularAlbedo = reinterpret_cast<float4*>(specularAlbedoGuideBuffer_);
-        params.materials = materialBuffer_;
-        params.texturePixels = texturePixelBuffer_;
-        params.textureMetadata = textureMetadataBuffer_;
-        params.textureCount = static_cast<unsigned int>(textureMetadataCount / 3);
-        params.imageWidth = static_cast<unsigned int>(width_);
-        params.imageHeight = static_cast<unsigned int>(height_);
-        params.cameraPosition = Float3{camera.positionX, camera.positionY, camera.positionZ};
-        const Float3 target = Float3{camera.targetX, camera.targetY, camera.targetZ};
-        params.cameraForward = Normalize(Subtract(target, params.cameraPosition));
-        params.cameraRight = Normalize(Cross(params.cameraForward, Float3{0.0f, 1.0f, 0.0f}));
-        params.cameraUp = Normalize(Cross(params.cameraRight, params.cameraForward));
-        params.tanHalfFovY = std::tan(camera.fovY * 0.5f * 3.14159265359f / 180.0f);
-        params.settings = settings;
-        params.handle = gasHandle_;
-        params.frameIndex = frameIndex;
-        BuildViewProjectionMatrix(camera, params.currentViewProjection);
-
-        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(launchParamsBuffer_), &params, sizeof(params), cudaMemcpyHostToDevice), "cudaMemcpy(launchParams)");
-
-        const auto launchStart = std::chrono::steady_clock::now();
-        CheckOptix(optixLaunch(
-            pipeline_,
-            stream_,
-            launchParamsBuffer_,
-            sizeof(LaunchParams),
-            &sbt_,
-            static_cast<unsigned int>(width_),
-            static_cast<unsigned int>(height_),
-            1), "optixLaunch");
-
-        CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize");
-        localStats.launchMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - launchStart).count();
-
-        const auto denoiseStart = std::chrono::steady_clock::now();
-        const int denoiserInterval = std::max(settings.denoiserIntervalFrames, 1);
-        const unsigned int denoiserFrameIndex = presentFrameIndex_++;
-        const bool shouldDenoise = settings.enableDenoiser != 0 &&
-            (denoiserFrameIndex == 0u || (denoiserFrameIndex % static_cast<unsigned int>(denoiserInterval)) == 0u);
-        CUdeviceptr presentationSource = beautyBuffer_;
-        if (shouldDenoise) {
-            presentationSource = DenoiseBeauty();
-            hasValidDenoisedBeauty_ = true;
-            localStats.denoisedThisFrame = 1;
-        }
-        localStats.denoiseMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - denoiseStart).count();
-
-        const auto toneMapStart = std::chrono::steady_clock::now();
-        PresentToOutputTexture(presentationSource, settings);
-        localStats.toneMapMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - toneMapStart).count();
-        localStats.readbackMs = 0.0;
-        localStats.totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - totalStart).count();
-
-        if (stats != nullptr) {
-            *stats = localStats;
-        }
-    }
 
 private:
     void InitializeOptix() {
@@ -731,7 +617,7 @@ private:
 
         OptixPipelineCompileOptions pipelineCompileOptions{};
         pipelineCompileOptions.usesMotionBlur = 0;
-        pipelineCompileOptions.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
+        pipelineCompileOptions.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING;
         pipelineCompileOptions.numPayloadValues = 2;
         pipelineCompileOptions.numAttributeValues = 2;
         pipelineCompileOptions.exceptionFlags = OPTIX_EXCEPTION_FLAG_NONE;
@@ -803,7 +689,7 @@ private:
         unsigned int directCallableStackState = 0;
         unsigned int continuationStack = 0;
         CheckOptix(optixUtilComputeStackSizes(&stackSizes, 1, 0, 0, &directCallableStackTraversal, &directCallableStackState, &continuationStack), "optixUtilComputeStackSizes");
-        CheckOptix(optixPipelineSetStackSize(pipeline_, directCallableStackTraversal, directCallableStackState, continuationStack, 1), "optixPipelineSetStackSize");
+        CheckOptix(optixPipelineSetStackSize(pipeline_, directCallableStackTraversal, directCallableStackState, continuationStack, 2), "optixPipelineSetStackSize");
     }
 
     void CreateCudaModule(const std::string& ptx) {
@@ -824,46 +710,200 @@ private:
         CheckCuda(cudaMalloc(reinterpret_cast<void**>(&missRecordBuffer_), sizeof(missRecord)), "cudaMalloc(missRecord)");
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(missRecordBuffer_), &missRecord, sizeof(missRecord), cudaMemcpyHostToDevice), "cudaMemcpy(missRecord)");
 
-        HitGroupRecord hitRecord{};
-        CheckOptix(optixSbtRecordPackHeader(hitgroupProgramGroup_, &hitRecord), "optixSbtRecordPackHeader(hitgroup)");
-        CheckCuda(cudaMalloc(reinterpret_cast<void**>(&hitgroupRecordBuffer_), sizeof(hitRecord)), "cudaMalloc(hitgroupRecord)");
-        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(hitgroupRecordBuffer_), &hitRecord, sizeof(hitRecord), cudaMemcpyHostToDevice), "cudaMemcpy(hitgroupRecord)");
-
         CheckCuda(cudaMalloc(reinterpret_cast<void**>(&launchParamsBuffer_), sizeof(LaunchParams)), "cudaMalloc(launchParamsBuffer)");
 
         sbt_.raygenRecord = raygenRecordBuffer_;
         sbt_.missRecordBase = missRecordBuffer_;
         sbt_.missRecordStrideInBytes = sizeof(MissRecord);
         sbt_.missRecordCount = 1;
-        sbt_.hitgroupRecordBase = hitgroupRecordBuffer_;
+        sbt_.hitgroupRecordBase = 0;
         sbt_.hitgroupRecordStrideInBytes = sizeof(HitGroupRecord);
-        sbt_.hitgroupRecordCount = 1;
+        sbt_.hitgroupRecordCount = 0;
     }
 
-    void UploadScene(
+public:
+    int UploadMesh(
+        int meshId,
         const float* vertices,
+        unsigned int vertexCount,
         const float* normals,
         const float* texCoords,
-        unsigned int vertexCount,
         const uint32_t* indices,
-        unsigned int triangleCount,
-        const uint32_t* triangleMaterialIndices,
-        const float* materialParameters,
-        unsigned int materialCount,
-        const int32_t* materialAlbedoTextureIndices,
-        const uint8_t* texturePixels,
-        unsigned int texturePixelCount,
-        const int32_t* textureMetadata,
-        unsigned int textureCount) {
+        unsigned int triangleCount) {
         const auto vertexBytes = static_cast<size_t>(vertexCount) * sizeof(float3);
         const auto normalBytes = static_cast<size_t>(vertexCount) * sizeof(float3);
         const auto texCoordBytes = static_cast<size_t>(vertexCount) * sizeof(float2);
         const auto indexBytes = static_cast<size_t>(triangleCount) * sizeof(TriangleIndices);
-        const auto triangleMaterialIndexBytes = static_cast<size_t>(triangleCount) * sizeof(uint32_t);
-        const auto materialBytes = static_cast<size_t>(materialCount) * sizeof(NativeMaterial);
-        const auto texturePixelBytes = static_cast<size_t>(texturePixelCount) * sizeof(uchar4);
-        const auto textureMetadataBytes = static_cast<size_t>(textureCount) * 3 * sizeof(int32_t);
 
+        if (static_cast<size_t>(meshId) >= meshes_.size()) {
+            meshes_.resize(static_cast<size_t>(meshId) + 1);
+        }
+
+        auto& mesh = meshes_[static_cast<size_t>(meshId)];
+        EnsureBuffer(mesh.vertexBuffer, mesh.vertexCapacity, vertexBytes);
+        EnsureBuffer(mesh.normalBuffer, mesh.normalCapacity, normalBytes);
+        EnsureBuffer(mesh.texCoordBuffer, mesh.texCoordCapacity, texCoordBytes);
+        EnsureBuffer(mesh.indexBuffer, mesh.indexCapacity, indexBytes);
+
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(mesh.vertexBuffer), vertices, vertexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(meshVertices)");
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(mesh.normalBuffer), normals, normalBytes, cudaMemcpyHostToDevice), "cudaMemcpy(meshNormals)");
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(mesh.texCoordBuffer), texCoords, texCoordBytes, cudaMemcpyHostToDevice), "cudaMemcpy(meshTexCoords)");
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(mesh.indexBuffer), indices, indexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(meshIndices)");
+
+        mesh.vertexCount = vertexCount;
+        mesh.triangleCount = triangleCount;
+
+        const uint32_t flags[] = {OPTIX_GEOMETRY_FLAG_NONE};
+        OptixBuildInput buildInput{};
+        buildInput.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
+        buildInput.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
+        buildInput.triangleArray.vertexStrideInBytes = sizeof(float3);
+        buildInput.triangleArray.numVertices = vertexCount;
+        buildInput.triangleArray.vertexBuffers = &mesh.vertexBuffer;
+        buildInput.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
+        buildInput.triangleArray.indexStrideInBytes = sizeof(TriangleIndices);
+        buildInput.triangleArray.numIndexTriplets = triangleCount;
+        buildInput.triangleArray.indexBuffer = mesh.indexBuffer;
+        buildInput.triangleArray.flags = flags;
+        buildInput.triangleArray.numSbtRecords = 1;
+
+        OptixAccelBuildOptions accelOptions{};
+        accelOptions.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION | OPTIX_BUILD_FLAG_ALLOW_UPDATE;
+        accelOptions.operation = OPTIX_BUILD_OPERATION_BUILD;
+
+        OptixAccelBufferSizes sizes{};
+        CheckOptix(optixAccelComputeMemoryUsage(context_, &accelOptions, &buildInput, 1, &sizes), "optixAccelComputeMemoryUsage(mesh)");
+
+        EnsureBuffer(gasScratchBuffer_, gasScratchCapacity_, sizes.tempSizeInBytes);
+        EnsureBuffer(mesh.gasOutputBuffer, mesh.gasOutputCapacity, sizes.outputSizeInBytes);
+
+        OptixTraversableHandle newHandle = 0;
+        CheckOptix(optixAccelBuild(
+            context_, stream_, &accelOptions, &buildInput, 1,
+            gasScratchBuffer_, sizes.tempSizeInBytes,
+            mesh.gasOutputBuffer, sizes.outputSizeInBytes,
+            &newHandle, nullptr, 0), "optixAccelBuild(mesh)");
+        mesh.gasHandle = newHandle;
+
+        EnsureMeshHitRecord(meshId);
+
+        return meshId;
+    }
+
+    void UpdateMeshVertices(
+        int meshId,
+        const float* vertices,
+        unsigned int vertexCount) {
+        if (static_cast<size_t>(meshId) >= meshes_.size()) {
+            throw OptixError("Mesh ID not found for update.");
+        }
+
+        auto& mesh = meshes_[static_cast<size_t>(meshId)];
+        const auto vertexBytes = static_cast<size_t>(vertexCount) * sizeof(float3);
+        EnsureBuffer(mesh.vertexBuffer, mesh.vertexCapacity, vertexBytes);
+
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(mesh.vertexBuffer), vertices, vertexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(updateVertices)");
+
+        mesh.vertexCount = vertexCount;
+
+        const uint32_t flags[] = {OPTIX_GEOMETRY_FLAG_NONE};
+        OptixBuildInput buildInput{};
+        buildInput.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
+        buildInput.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
+        buildInput.triangleArray.vertexStrideInBytes = sizeof(float3);
+        buildInput.triangleArray.numVertices = vertexCount;
+        buildInput.triangleArray.vertexBuffers = &mesh.vertexBuffer;
+        buildInput.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
+        buildInput.triangleArray.indexStrideInBytes = sizeof(TriangleIndices);
+        buildInput.triangleArray.numIndexTriplets = mesh.triangleCount;
+        buildInput.triangleArray.indexBuffer = mesh.indexBuffer;
+        buildInput.triangleArray.flags = flags;
+        buildInput.triangleArray.numSbtRecords = 1;
+
+        OptixAccelBuildOptions accelOptions{};
+        accelOptions.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION | OPTIX_BUILD_FLAG_ALLOW_UPDATE;
+        accelOptions.operation = OPTIX_BUILD_OPERATION_UPDATE;
+
+        OptixAccelBufferSizes sizes{};
+        CheckOptix(optixAccelComputeMemoryUsage(context_, &accelOptions, &buildInput, 1, &sizes), "optixAccelComputeMemoryUsage(meshUpdate)");
+
+        EnsureBuffer(gasScratchBuffer_, gasScratchCapacity_, sizes.tempSizeInBytes);
+
+        CheckOptix(optixAccelBuild(
+            context_, stream_, &accelOptions, &buildInput, 1,
+            gasScratchBuffer_, sizes.tempSizeInBytes,
+            mesh.gasOutputBuffer, mesh.gasOutputCapacity,
+            &mesh.gasHandle, nullptr, 0), "optixAccelBuild(meshUpdate)");
+    }
+
+    void EnsureMeshHitRecord(int meshId) {
+        if (meshId < 0) return;
+
+        HitGroupRecord hitRecord{};
+        CheckOptix(optixSbtRecordPackHeader(hitgroupProgramGroup_, &hitRecord), "optixSbtRecordPackHeader(hitgroup-mesh)");
+
+        auto& mesh = meshes_[static_cast<size_t>(meshId)];
+        hitRecord.data.vertices = mesh.vertexBuffer;
+        hitRecord.data.normals = mesh.normalBuffer;
+        hitRecord.data.texCoords = mesh.texCoordBuffer;
+        hitRecord.data.indices = mesh.indexBuffer;
+        hitRecord.data.materials = materialBuffer_;
+
+        const auto recordSize = sizeof(HitGroupRecord);
+        const auto requiredSize = static_cast<size_t>(meshId + 1) * recordSize;
+        if (hitgroupRecordCapacity_ < requiredSize) {
+            auto newBuffer = CUdeviceptr{};
+            CheckCuda(cudaMalloc(reinterpret_cast<void**>(&newBuffer), requiredSize), "cudaMalloc(hitgroupRecords)");
+            if (hitgroupRecordBuffer_ != 0) {
+                CheckCuda(cudaMemcpy(reinterpret_cast<void*>(newBuffer), reinterpret_cast<void*>(hitgroupRecordBuffer_), hitgroupRecordCapacity_, cudaMemcpyDeviceToDevice), "cudaMemcpy(hitgroupRecords)");
+                CheckCuda(cudaFree(reinterpret_cast<void*>(hitgroupRecordBuffer_)), "cudaFree(hitgroupRecords)");
+            }
+            hitgroupRecordBuffer_ = newBuffer;
+            hitgroupRecordCapacity_ = requiredSize;
+        }
+
+        const auto offset = static_cast<size_t>(meshId) * recordSize;
+        CheckCuda(cudaMemcpy(
+            reinterpret_cast<void*>(hitgroupRecordBuffer_ + offset),
+            &hitRecord, recordSize, cudaMemcpyHostToDevice), "cudaMemcpy(hitgroupRecord-mesh)");
+
+        sbt_.hitgroupRecordBase = hitgroupRecordBuffer_;
+        sbt_.hitgroupRecordCount = std::max(sbt_.hitgroupRecordCount, static_cast<unsigned int>(meshId + 1));
+    }
+
+    void RenderInstances(
+        const NativeCamera& camera,
+        const NativeRenderSettings& settings,
+        const int* meshIds,
+        int instanceCount,
+        const int* materialIndices,
+        const float* transforms,
+        const float* materialParameters,
+        int materialFloatCount,
+        const int32_t* materialAlbedoTextureIndices,
+        const uint8_t* texturePixels,
+        int texturePixelByteCount,
+        const int32_t* textureMetadata,
+        int textureMetadataCount,
+        unsigned int frameIndex,
+        unsigned int outputTextureId,
+        NativeFrameStats* stats) {
+        const auto totalStart = std::chrono::steady_clock::now();
+        NativeFrameStats localStats{};
+
+        if (instanceCount <= 0 || materialFloatCount <= 0 || (materialFloatCount % 5) != 0) {
+            throw OptixError("Scene buffers are invalid.");
+        }
+        if (outputTextureId == 0) {
+            throw OptixError("Output texture is invalid.");
+        }
+
+        EnsureOutputTextureInterop(outputTextureId);
+
+        const auto uploadStart = std::chrono::steady_clock::now();
+
+        const auto materialCount = static_cast<unsigned int>(materialFloatCount / 5);
+        const auto materialBytes = static_cast<size_t>(materialCount) * sizeof(NativeMaterial);
         std::vector<NativeMaterial> materials(materialCount);
         for (unsigned int materialIndex = 0; materialIndex < materialCount; ++materialIndex) {
             const auto parameterOffset = materialIndex * 5;
@@ -877,20 +917,14 @@ private:
             };
         }
 
-        EnsureBuffer(vertexBuffer_, vertexBufferCapacity_, vertexBytes);
-        EnsureBuffer(normalBuffer_, normalBufferCapacity_, normalBytes);
-        EnsureBuffer(texCoordBuffer_, texCoordBufferCapacity_, texCoordBytes);
-        EnsureBuffer(indexBuffer_, indexBufferCapacity_, indexBytes);
-        EnsureBuffer(triangleMaterialIndexBuffer_, triangleMaterialIndexCapacity_, triangleMaterialIndexBytes);
+        const auto texturePixelBytes = static_cast<size_t>(texturePixelByteCount);
+        const auto textureCount = textureMetadataCount / 3;
+        const auto textureMetadataBytes = static_cast<size_t>(textureCount) * 3 * sizeof(int32_t);
+
         EnsureBuffer(materialBuffer_, materialBufferCapacity_, materialBytes);
         EnsureBuffer(texturePixelBuffer_, texturePixelBufferCapacity_, texturePixelBytes);
         EnsureBuffer(textureMetadataBuffer_, textureMetadataBufferCapacity_, textureMetadataBytes);
 
-        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(vertexBuffer_), vertices, vertexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(vertices)");
-        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(normalBuffer_), normals, normalBytes, cudaMemcpyHostToDevice), "cudaMemcpy(normals)");
-        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(texCoordBuffer_), texCoords, texCoordBytes, cudaMemcpyHostToDevice), "cudaMemcpy(texCoords)");
-        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(indexBuffer_), indices, indexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(indices)");
-        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(triangleMaterialIndexBuffer_), triangleMaterialIndices, triangleMaterialIndexBytes, cudaMemcpyHostToDevice), "cudaMemcpy(triangleMaterialIndices)");
         CheckCuda(cudaMemcpy(reinterpret_cast<void*>(materialBuffer_), materials.data(), materialBytes, cudaMemcpyHostToDevice), "cudaMemcpy(materials)");
         if (texturePixelBytes > 0) {
             CheckCuda(cudaMemcpy(reinterpret_cast<void*>(texturePixelBuffer_), texturePixels, texturePixelBytes, cudaMemcpyHostToDevice), "cudaMemcpy(texturePixels)");
@@ -899,56 +933,129 @@ private:
             CheckCuda(cudaMemcpy(reinterpret_cast<void*>(textureMetadataBuffer_), textureMetadata, textureMetadataBytes, cudaMemcpyHostToDevice), "cudaMemcpy(textureMetadata)");
         }
 
-        const uint32_t flags[] = {OPTIX_GEOMETRY_FLAG_NONE};
+        localStats.uploadSceneMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart).count();
 
-        OptixBuildInput buildInput{};
-        buildInput.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
-        buildInput.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
-        buildInput.triangleArray.vertexStrideInBytes = sizeof(float3);
-        buildInput.triangleArray.numVertices = vertexCount;
-        buildInput.triangleArray.vertexBuffers = &vertexBuffer_;
-        buildInput.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
-        buildInput.triangleArray.indexStrideInBytes = sizeof(TriangleIndices);
-        buildInput.triangleArray.numIndexTriplets = triangleCount;
-        buildInput.triangleArray.indexBuffer = indexBuffer_;
-        buildInput.triangleArray.flags = flags;
-        buildInput.triangleArray.numSbtRecords = 1;
+        const auto iasStart = std::chrono::steady_clock::now();
 
-        OptixAccelBuildOptions accelOptions{};
-        accelOptions.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION;
-        accelOptions.operation = OPTIX_BUILD_OPERATION_BUILD;
+        std::vector<OptixInstance> optixInstances(static_cast<size_t>(instanceCount));
+        for (int i = 0; i < instanceCount; ++i) {
+            auto& inst = optixInstances[static_cast<size_t>(i)];
 
-        OptixAccelBufferSizes sizes{};
-        CheckOptix(optixAccelComputeMemoryUsage(context_, &accelOptions, &buildInput, 1, &sizes), "optixAccelComputeMemoryUsage");
+            const auto* tf = &transforms[i * 16];
+            for (int row = 0; row < 3; ++row) {
+                for (int col = 0; col < 4; ++col) {
+                    inst.transform[row * 4 + col] = tf[row * 4 + col];
+                }
+            }
 
-        EnsureBuffer(gasScratchBuffer_, gasScratchCapacity_, sizes.tempSizeInBytes);
-        EnsureBuffer(gasOutputBuffer_, gasOutputCapacity_, sizes.outputSizeInBytes);
+            inst.instanceId = static_cast<unsigned int>(materialIndices[i]);
 
+            const auto meshId = meshIds[i];
+            if (static_cast<size_t>(meshId) >= meshes_.size() || meshes_[static_cast<size_t>(meshId)].gasHandle == 0) {
+                throw OptixError("Instance references unknown mesh.");
+            }
+
+            inst.sbtOffset = static_cast<unsigned int>(meshId);
+            inst.visibilityMask = 1;
+            inst.flags = OPTIX_INSTANCE_FLAG_NONE;
+            inst.traversableHandle = meshes_[static_cast<size_t>(meshId)].gasHandle;
+        }
+
+        const auto instancesBytes = static_cast<size_t>(instanceCount) * sizeof(OptixInstance);
+        EnsureBuffer(iasInstanceBuffer_, iasInstanceCapacity_, instancesBytes);
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(iasInstanceBuffer_), optixInstances.data(), instancesBytes, cudaMemcpyHostToDevice), "cudaMemcpy(instances)");
+
+        OptixAccelBuildOptions iasOptions{};
+        iasOptions.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION;
+        iasOptions.operation = OPTIX_BUILD_OPERATION_BUILD;
+
+        OptixBuildInput iasInput{};
+        iasInput.type = OPTIX_BUILD_INPUT_TYPE_INSTANCES;
+        iasInput.instanceArray.instances = iasInstanceBuffer_;
+        iasInput.instanceArray.numInstances = static_cast<unsigned int>(instanceCount);
+
+        OptixAccelBufferSizes iasSizes{};
+        CheckOptix(optixAccelComputeMemoryUsage(context_, &iasOptions, &iasInput, 1, &iasSizes), "optixAccelComputeMemoryUsage(IAS)");
+
+        EnsureBuffer(iasScratchBuffer_, iasScratchCapacity_, iasSizes.tempSizeInBytes);
+        EnsureBuffer(iasOutputBuffer_, iasOutputCapacity_, iasSizes.outputSizeInBytes);
+
+        OptixTraversableHandle iasHandle = 0;
         CheckOptix(optixAccelBuild(
-            context_,
-            stream_,
-            &accelOptions,
-            &buildInput,
-            1,
-            gasScratchBuffer_,
-            sizes.tempSizeInBytes,
-            gasOutputBuffer_,
-            sizes.outputSizeInBytes,
-            &gasHandle_,
-            nullptr,
-            0), "optixAccelBuild");
+            context_, stream_, &iasOptions, &iasInput, 1,
+            iasScratchBuffer_, iasSizes.tempSizeInBytes,
+            iasOutputBuffer_, iasSizes.outputSizeInBytes,
+            &iasHandle, nullptr, 0), "optixAccelBuild(IAS)");
 
-        HitGroupRecord hitRecord{};
-        CheckOptix(optixSbtRecordPackHeader(hitgroupProgramGroup_, &hitRecord), "optixSbtRecordPackHeader(hitgroup-update)");
-        hitRecord.data.vertices = vertexBuffer_;
-        hitRecord.data.normals = normalBuffer_;
-        hitRecord.data.texCoords = texCoordBuffer_;
-        hitRecord.data.indices = indexBuffer_;
-        hitRecord.data.triangleMaterialIndices = triangleMaterialIndexBuffer_;
-        hitRecord.data.materials = materialBuffer_;
-        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(hitgroupRecordBuffer_), &hitRecord, sizeof(hitRecord), cudaMemcpyHostToDevice), "cudaMemcpy(hitgroupRecord-update)");
+        localStats.uploadSceneMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - iasStart).count();
+
+        LaunchParams params{};
+        params.beauty = reinterpret_cast<float4*>(beautyBuffer_);
+        params.accumulation = reinterpret_cast<float4*>(accumulationBuffer_);
+        params.depth = reinterpret_cast<float*>(depthBuffer_);
+        params.worldPosition = reinterpret_cast<float4*>(worldPositionBuffer_);
+        params.normals = reinterpret_cast<float4*>(normalGuideBuffer_);
+        params.roughness = reinterpret_cast<float*>(roughnessGuideBuffer_);
+        params.diffuseAlbedo = reinterpret_cast<float4*>(diffuseAlbedoGuideBuffer_);
+        params.specularAlbedo = reinterpret_cast<float4*>(specularAlbedoGuideBuffer_);
+        params.materials = materialBuffer_;
+        params.texturePixels = texturePixelBuffer_;
+        params.textureMetadata = textureMetadataBuffer_;
+        params.textureCount = static_cast<unsigned int>(textureCount);
+        params.imageWidth = static_cast<unsigned int>(width_);
+        params.imageHeight = static_cast<unsigned int>(height_);
+        params.cameraPosition = Float3{camera.positionX, camera.positionY, camera.positionZ};
+        const Float3 target = Float3{camera.targetX, camera.targetY, camera.targetZ};
+        params.cameraForward = Normalize(Subtract(target, params.cameraPosition));
+        params.cameraRight = Normalize(Cross(params.cameraForward, Float3{0.0f, 1.0f, 0.0f}));
+        params.cameraUp = Normalize(Cross(params.cameraRight, params.cameraForward));
+        params.tanHalfFovY = std::tan(camera.fovY * 0.5f * 3.14159265359f / 180.0f);
+        params.settings = settings;
+        params.iasHandle = iasHandle;
+        params.frameIndex = frameIndex;
+        BuildViewProjectionMatrix(camera, params.currentViewProjection);
+
+        CheckCuda(cudaMemcpy(reinterpret_cast<void*>(launchParamsBuffer_), &params, sizeof(params), cudaMemcpyHostToDevice), "cudaMemcpy(launchParams)");
+
+        const auto launchStart = std::chrono::steady_clock::now();
+        CheckOptix(optixLaunch(
+            pipeline_,
+            stream_,
+            launchParamsBuffer_,
+            sizeof(LaunchParams),
+            &sbt_,
+            static_cast<unsigned int>(width_),
+            static_cast<unsigned int>(height_),
+            1), "optixLaunch");
+
+        CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize");
+        localStats.launchMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - launchStart).count();
+
+        const auto denoiseStart = std::chrono::steady_clock::now();
+        const int denoiserInterval = std::max(settings.denoiserIntervalFrames, 1);
+        const unsigned int denoiserFrameIndex = presentFrameIndex_++;
+        const bool shouldDenoise = settings.enableDenoiser != 0 &&
+            (denoiserFrameIndex == 0u || (denoiserFrameIndex % static_cast<unsigned int>(denoiserInterval)) == 0u);
+        CUdeviceptr presentationSource = beautyBuffer_;
+        if (shouldDenoise) {
+            presentationSource = DenoiseBeauty();
+            hasValidDenoisedBeauty_ = true;
+            localStats.denoisedThisFrame = 1;
+        }
+        localStats.denoiseMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - denoiseStart).count();
+
+        const auto toneMapStart = std::chrono::steady_clock::now();
+        PresentToOutputTexture(presentationSource, settings);
+        localStats.toneMapMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - toneMapStart).count();
+        localStats.readbackMs = 0.0;
+        localStats.totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - totalStart).count();
+
+        if (stats != nullptr) {
+            *stats = localStats;
+        }
     }
 
+private:
     std::string CompileOptixPtx() {
         nvrtcProgram program = nullptr;
         CheckNvrtc(nvrtcCreateProgram(&program, kOptixDeviceSource, "rayoptix_optix_kernels.cu", 0, nullptr, nullptr), "nvrtcCreateProgram");
@@ -1048,18 +1155,23 @@ private:
         SafeCudaFree(raygenRecordBuffer_);
         SafeCudaFree(missRecordBuffer_);
         SafeCudaFree(hitgroupRecordBuffer_);
-        SafeCudaFree(vertexBuffer_);
-        SafeCudaFree(normalBuffer_);
-        SafeCudaFree(texCoordBuffer_);
-        SafeCudaFree(indexBuffer_);
-        SafeCudaFree(triangleMaterialIndexBuffer_);
+        for (auto& mesh : meshes_) {
+            SafeCudaFree(mesh.vertexBuffer);
+            SafeCudaFree(mesh.normalBuffer);
+            SafeCudaFree(mesh.texCoordBuffer);
+            SafeCudaFree(mesh.indexBuffer);
+            SafeCudaFree(mesh.gasOutputBuffer);
+        }
+        meshes_.clear();
         SafeCudaFree(materialBuffer_);
         SafeCudaFree(texturePixelBuffer_);
         SafeCudaFree(textureMetadataBuffer_);
         SafeCudaFree(denoiserStateBuffer_);
         SafeCudaFree(denoiserScratchBuffer_);
         SafeCudaFree(gasScratchBuffer_);
-        SafeCudaFree(gasOutputBuffer_);
+        SafeCudaFree(iasInstanceBuffer_);
+        SafeCudaFree(iasScratchBuffer_);
+        SafeCudaFree(iasOutputBuffer_);
         if (pipeline_ != nullptr) {
             optixPipelineDestroy(pipeline_);
             pipeline_ = nullptr;
@@ -1273,36 +1385,30 @@ private:
     CUdeviceptr missRecordBuffer_ = 0;
     CUdeviceptr hitgroupRecordBuffer_ = 0;
 
-    CUdeviceptr vertexBuffer_ = 0;
-    CUdeviceptr normalBuffer_ = 0;
-    CUdeviceptr texCoordBuffer_ = 0;
-    CUdeviceptr indexBuffer_ = 0;
-    CUdeviceptr triangleMaterialIndexBuffer_ = 0;
     CUdeviceptr materialBuffer_ = 0;
     CUdeviceptr texturePixelBuffer_ = 0;
     CUdeviceptr textureMetadataBuffer_ = 0;
     CUdeviceptr denoiserStateBuffer_ = 0;
     CUdeviceptr denoiserScratchBuffer_ = 0;
     CUdeviceptr gasScratchBuffer_ = 0;
-    CUdeviceptr gasOutputBuffer_ = 0;
+    CUdeviceptr iasInstanceBuffer_ = 0;
+    CUdeviceptr iasScratchBuffer_ = 0;
+    CUdeviceptr iasOutputBuffer_ = 0;
     cudaGraphicsResource_t textureInteropResource_ = nullptr;
     unsigned int registeredOutputTextureId_ = 0;
 
-    size_t vertexBufferCapacity_ = 0;
-    size_t normalBufferCapacity_ = 0;
-    size_t texCoordBufferCapacity_ = 0;
-    size_t indexBufferCapacity_ = 0;
-    size_t triangleMaterialIndexCapacity_ = 0;
     size_t materialBufferCapacity_ = 0;
     size_t texturePixelBufferCapacity_ = 0;
     size_t textureMetadataBufferCapacity_ = 0;
     size_t denoiserStateCapacity_ = 0;
     size_t denoiserScratchCapacity_ = 0;
     size_t gasScratchCapacity_ = 0;
-    size_t gasOutputCapacity_ = 0;
+    size_t iasInstanceCapacity_ = 0;
+    size_t iasScratchCapacity_ = 0;
+    size_t iasOutputCapacity_ = 0;
+    size_t hitgroupRecordCapacity_ = 0;
 
     OptixDenoiserSizes denoiserSizes_{};
-    OptixTraversableHandle gasHandle_ = 0;
     bool hasValidDenoisedBeauty_ = false;
     unsigned int presentFrameIndex_ = 0;
     float previousViewProjection_[16] = {
@@ -1311,6 +1417,8 @@ private:
         0.0f, 0.0f, 1.0f, 0.0f,
         0.0f, 0.0f, 0.0f, 1.0f
     };
+
+    std::vector<MeshGpuData> meshes_;
 };
 
 void CopyError(char* error, int errorCapacity, const std::string& message) {
@@ -1366,14 +1474,9 @@ bool ResizeRendererHandle(void* handle, int renderWidth, int renderHeight, int o
     }
 }
 
-bool RenderRendererHandle(
+bool UploadMeshRendererHandle(
     void* handle,
-    int renderWidth,
-    int renderHeight,
-    int outputWidth,
-    int outputHeight,
-    NativeCamera camera,
-    NativeRenderSettings settings,
+    int meshId,
     const float* vertices,
     int vertexFloatCount,
     const float* normals,
@@ -1382,8 +1485,65 @@ bool RenderRendererHandle(
     int texCoordFloatCount,
     const uint32_t* indices,
     int indexCount,
-    const uint32_t* triangleMaterialIndices,
-    int triangleMaterialIndexCount,
+    char* error,
+    int errorCapacity) {
+    try {
+        if (handle == nullptr) {
+            throw OptixError("Renderer handle is null.");
+        }
+
+        auto* renderer = static_cast<NativeRenderer*>(handle);
+        const auto vertexCount = static_cast<unsigned int>(vertexFloatCount / 3);
+        const auto triangleCount = static_cast<unsigned int>(indexCount / 3);
+        renderer->UploadMesh(
+            meshId,
+            vertices, vertexCount,
+            normals,
+            texCoords,
+            indices, triangleCount);
+        CopyError(error, errorCapacity, "");
+        return true;
+    } catch (const std::exception& exception) {
+        CopyError(error, errorCapacity, exception.what());
+        return false;
+    }
+}
+
+bool UpdateMeshVerticesRendererHandle(
+    void* handle,
+    int meshId,
+    const float* vertices,
+    int vertexFloatCount,
+    char* error,
+    int errorCapacity) {
+    try {
+        if (handle == nullptr) {
+            throw OptixError("Renderer handle is null.");
+        }
+
+        auto* renderer = static_cast<NativeRenderer*>(handle);
+        const auto vertexCount = static_cast<unsigned int>(vertexFloatCount / 3);
+        renderer->UpdateMeshVertices(meshId, vertices, vertexCount);
+        CopyError(error, errorCapacity, "");
+        return true;
+    } catch (const std::exception& exception) {
+        CopyError(error, errorCapacity, exception.what());
+        return false;
+    }
+}
+
+bool RenderInstancesRendererHandle(
+    void* handle,
+    int renderWidth,
+    int renderHeight,
+    int outputWidth,
+    int outputHeight,
+    NativeCamera camera,
+    NativeRenderSettings settings,
+    const int* meshIds,
+    int instanceCount,
+    const int* materialIndices,
+    const float* transforms,
     const float* materialParameters,
     int materialFloatCount,
     const int32_t* materialAlbedoTextureIndices,
@@ -1404,23 +1564,16 @@ bool RenderRendererHandle(
 
         auto* renderer = static_cast<NativeRenderer*>(handle);
         renderer->Resize(renderWidth, renderHeight, outputWidth, outputHeight);
-        renderer->Render(
+        renderer->RenderInstances(
             camera,
             settings,
-            vertices,
-            vertexFloatCount,
-            normals,
-            normalFloatCount,
-            texCoords,
-            texCoordFloatCount,
-            indices,
-            indexCount,
-            triangleMaterialIndices,
-            triangleMaterialIndexCount,
+            meshIds,
+            instanceCount,
+            materialIndices,
+            transforms,
             materialParameters,
             materialFloatCount,
             materialAlbedoTextureIndices,
-            materialTextureIndexCount,
             texturePixels,
             texturePixelByteCount,
             textureMetadata,

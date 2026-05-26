@@ -79,6 +79,9 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private int lastSceneTextureCount;
     private Vector4 lastSceneUvRange;
 
+    private readonly Dictionary<MeshData, int> uploadedMeshIds = new(ReferenceEqualityComparer.Instance);
+    private int nextMeshId = 1;
+
     public override string name => initError is null ? "OptiX" : "OptiX (Unavailable)";
 
     public override void Init() {
@@ -144,34 +147,139 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         var settings = BuildSettings(frameIndex);
         var sceneSignature = ComputeSceneSignature();
         ResetAccumulationIfNeeded(camera, sceneSignature, settings);
-        var scene = BuildSceneGeometry();
 
         var interopStopwatch = Stopwatch.StartNew();
-        if (!OptixNative.Render(nativeHandle,
+
+        var instanceMeshIds = new int[drawCalls.Count];
+        var instanceMaterialIndices = new int[drawCalls.Count];
+        var instanceTransforms = new float[drawCalls.Count * 16];
+        var materialParameters = new List<float>();
+        var materialAlbedoTextureIndices = new List<int>();
+        var materialLookup = new Dictionary<MaterialData, uint>(ReferenceEqualityComparer.Instance);
+        var textureLookup = new Dictionary<TextureData, int>(ReferenceEqualityComparer.Instance);
+        var texturePixels = new List<byte>();
+        var textureMetadata = new List<int>();
+        var animatedMeshes = new List<MeshData>();
+
+        uint GetOrAddMaterial(MaterialData materialData) {
+            if (materialLookup.TryGetValue(materialData, out var existingIndex)) {
+                return existingIndex;
+            }
+            var materialIndex = (uint)materialAlbedoTextureIndices.Count;
+            materialLookup[materialData] = materialIndex;
+            materialParameters.Add(materialData.Color.X);
+            materialParameters.Add(materialData.Color.Y);
+            materialParameters.Add(materialData.Color.Z);
+            materialParameters.Add(materialData.Color.W);
+            materialParameters.Add(materialData.Reflectivity);
+            materialAlbedoTextureIndices.Add(GetOrAddTexture(materialData.GetTexture(MaterialMapIndex.Albedo)));
+            return materialIndex;
+        }
+
+        int GetOrAddTexture(TextureData? textureData) {
+            textureData?.EnsureOptixPixels();
+            if (textureData?.OptixPixels == null ||
+                textureData.OptixPixels.Length == 0 ||
+                textureData.OptixWidth <= 0 ||
+                textureData.OptixHeight <= 0) {
+                return -1;
+            }
+            if (textureLookup.TryGetValue(textureData, out var existingIndex)) {
+                return existingIndex;
+            }
+            var textureIndex = textureMetadata.Count / 3;
+            textureLookup[textureData] = textureIndex;
+            textureMetadata.Add(texturePixels.Count / 4);
+            textureMetadata.Add(textureData.OptixWidth);
+            textureMetadata.Add(textureData.OptixHeight);
+            texturePixels.AddRange(textureData.OptixPixels);
+            return textureIndex;
+        }
+
+        int instanceIndex = 0;
+        foreach (var drawCall in drawCalls) {
+            var meshData = drawCall.meshData;
+
+            if (!uploadedMeshIds.TryGetValue(meshData, out var meshId)) {
+                meshId = nextMeshId++;
+                var geometry = meshData.CreateOptixGeometry();
+                if (!OptixNative.UploadMesh(nativeHandle,
+                        meshId,
+                        geometry.Vertices, geometry.Vertices.Length,
+                        geometry.Normals, geometry.Normals.Length,
+                        geometry.TexCoords, geometry.TexCoords.Length,
+                        geometry.Indices, geometry.Indices.Length,
+                        error, error.Capacity)) {
+                    initError = error.ToString();
+                    LogErrorOnce(initError);
+                    DrawUnavailable();
+                    return;
+                }
+                uploadedMeshIds[meshData] = meshId;
+            }
+
+            if (meshData.UsesSkinning || meshData.AnimatedVertices != null) {
+                animatedMeshes.Add(meshData);
+            }
+
+            var materialIndex = (int)GetOrAddMaterial(drawCall.materialData);
+            instanceMeshIds[instanceIndex] = meshId;
+            instanceMaterialIndices[instanceIndex] = materialIndex;
+
+            var m = drawCall.matrix;
+            instanceTransforms[instanceIndex * 16 + 0] = m.M11;
+            instanceTransforms[instanceIndex * 16 + 1] = m.M12;
+            instanceTransforms[instanceIndex * 16 + 2] = m.M13;
+            instanceTransforms[instanceIndex * 16 + 3] = m.M14;
+            instanceTransforms[instanceIndex * 16 + 4] = m.M21;
+            instanceTransforms[instanceIndex * 16 + 5] = m.M22;
+            instanceTransforms[instanceIndex * 16 + 6] = m.M23;
+            instanceTransforms[instanceIndex * 16 + 7] = m.M24;
+            instanceTransforms[instanceIndex * 16 + 8] = m.M31;
+            instanceTransforms[instanceIndex * 16 + 9] = m.M32;
+            instanceTransforms[instanceIndex * 16 + 10] = m.M33;
+            instanceTransforms[instanceIndex * 16 + 11] = m.M34;
+            instanceIndex++;
+        }
+
+        foreach (var mesh in animatedMeshes.Distinct()) {
+            if (uploadedMeshIds.TryGetValue(mesh, out var meshId)) {
+                var geometry = mesh.CreateOptixGeometry();
+                if (!OptixNative.UpdateMeshVertices(nativeHandle,
+                        meshId,
+                        geometry.Vertices, geometry.Vertices.Length,
+                        error, error.Capacity)) {
+                    initError = error.ToString();
+                    LogErrorOnce(initError);
+                    DrawUnavailable();
+                    return;
+                }
+            }
+        }
+
+        lastSceneMaterialCount = materialAlbedoTextureIndices.Count;
+        lastSceneTexturedMaterialCount = materialAlbedoTextureIndices.Count(index => index >= 0);
+        lastSceneTextureCount = textureMetadata.Count / 3;
+
+        if (!OptixNative.RenderInstances(nativeHandle,
                 renderWidth,
                 renderHeight,
                 outputWidth,
                 outputHeight,
                 camera,
                 settings,
-                scene.Vertices,
-                scene.Vertices.Length,
-                scene.Normals,
-                scene.Normals.Length,
-                scene.TexCoords,
-                scene.TexCoords.Length,
-                scene.Indices,
-                scene.Indices.Length,
-                scene.TriangleMaterialIndices,
-                scene.TriangleMaterialIndices.Length,
-                scene.MaterialParameters,
-                scene.MaterialParameters.Length,
-                scene.MaterialAlbedoTextureIndices,
-                scene.MaterialAlbedoTextureIndices.Length,
-                scene.TexturePixels,
-                scene.TexturePixels.Length,
-                scene.TextureMetadata,
-                scene.TextureMetadata.Length,
+                instanceMeshIds,
+                instanceMeshIds.Length,
+                instanceMaterialIndices,
+                instanceTransforms,
+                materialParameters.ToArray(),
+                materialParameters.Count,
+                materialAlbedoTextureIndices.ToArray(),
+                materialAlbedoTextureIndices.Count,
+                texturePixels.ToArray(),
+                texturePixels.Count,
+                textureMetadata.ToArray(),
+                textureMetadata.Count,
                 frameIndex++,
                 texture.Id,
                 ref lastFrameStats,
@@ -412,110 +520,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         Console.WriteLine($"[OptiX] {error}");
     }
 
-    private OptixScene BuildSceneGeometry() {
 
-        var vertices = new List<float>();
-        var normals = new List<float>();
-        var texCoords = new List<float>();
-        var indices = new List<uint>();
-        var triangleMaterialIndices = new List<uint>();
-        var materialParameters = new List<float>();
-        var materialAlbedoTextureIndices = new List<int>();
-        var texturePixels = new List<byte>();
-        var textureMetadata = new List<int>();
-        var materialLookup = new Dictionary<MaterialData, uint>(ReferenceEqualityComparer.Instance);
-        var textureLookup = new Dictionary<TextureData, int>(ReferenceEqualityComparer.Instance);
-        var minU = float.PositiveInfinity;
-        var minV = float.PositiveInfinity;
-        var maxU = float.NegativeInfinity;
-        var maxV = float.NegativeInfinity;
-
-        foreach (var drawCall in drawCalls) {
-            var geometry = drawCall.meshData.CreateOptixGeometry(drawCall.matrix);
-            var vertexOffset = vertices.Count / 3;
-            var materialIndex = GetOrAddMaterial(drawCall.materialData);
-
-            vertices.AddRange(geometry.Vertices);
-            normals.AddRange(geometry.Normals);
-            texCoords.AddRange(geometry.TexCoords);
-
-            for (var texCoordIndex = 0; texCoordIndex + 1 < geometry.TexCoords.Length; texCoordIndex += 2) {
-                minU = MathF.Min(minU, geometry.TexCoords[texCoordIndex]);
-                minV = MathF.Min(minV, geometry.TexCoords[texCoordIndex + 1]);
-                maxU = MathF.Max(maxU, geometry.TexCoords[texCoordIndex]);
-                maxV = MathF.Max(maxV, geometry.TexCoords[texCoordIndex + 1]);
-            }
-
-            for (var index = 0; index < geometry.Indices.Length; index++) {
-                indices.Add(geometry.Indices[index] + (uint)vertexOffset);
-            }
-
-            for (var triangleIndex = 0; triangleIndex < geometry.Indices.Length / 3; triangleIndex++) {
-                triangleMaterialIndices.Add(materialIndex);
-            }
-        }
-
-        lastSceneMaterialCount = materialAlbedoTextureIndices.Count;
-        lastSceneTexturedMaterialCount = materialAlbedoTextureIndices.Count(index => index >= 0);
-        lastSceneTextureCount = textureMetadata.Count / 3;
-        lastSceneUvRange = float.IsInfinity(minU)
-            ? Vector4.Zero
-            : new Vector4(minU, minV, maxU, maxV);
-
-        return new OptixScene(
-            vertices.ToArray(),
-            normals.ToArray(),
-            texCoords.ToArray(),
-            indices.ToArray(),
-            triangleMaterialIndices.ToArray(),
-            materialParameters.ToArray(),
-            materialAlbedoTextureIndices.ToArray(),
-            texturePixels.ToArray(),
-            textureMetadata.ToArray());
-
-        uint GetOrAddMaterial(MaterialData materialData) {
-
-            if (materialLookup.TryGetValue(materialData, out var existingIndex)) {
-                return existingIndex;
-            }
-
-            var materialIndex = (uint)materialAlbedoTextureIndices.Count;
-            materialLookup[materialData] = materialIndex;
-
-            materialParameters.Add(materialData.Color.X);
-            materialParameters.Add(materialData.Color.Y);
-            materialParameters.Add(materialData.Color.Z);
-            materialParameters.Add(materialData.Color.W);
-            materialParameters.Add(materialData.Reflectivity);
-            materialAlbedoTextureIndices.Add(GetOrAddTexture(materialData.GetTexture(MaterialMapIndex.Albedo)));
-            return materialIndex;
-        }
-
-        int GetOrAddTexture(TextureData? textureData) {
-
-            textureData?.EnsureOptixPixels();
-
-            if (textureData?.OptixPixels == null ||
-                textureData.OptixPixels.Length == 0 ||
-                textureData.OptixWidth <= 0 ||
-                textureData.OptixHeight <= 0) {
-
-                return -1;
-            }
-
-            if (textureLookup.TryGetValue(textureData, out var existingIndex)) {
-                return existingIndex;
-            }
-
-            var textureIndex = textureMetadata.Count / 3;
-            textureLookup[textureData] = textureIndex;
-            textureMetadata.Add(texturePixels.Count / 4);
-            textureMetadata.Add(textureData.OptixWidth);
-            textureMetadata.Add(textureData.OptixHeight);
-            texturePixels.AddRange(textureData.OptixPixels);
-            return textureIndex;
-        }
-    }
 
     private static OptixRenderSettings BuildSettings(uint frameIndex) {
 
@@ -642,16 +647,11 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         [return: MarshalAs(UnmanagedType.I1)]
         public static extern bool Resize(IntPtr handle, int renderWidth, int renderHeight, int outputWidth, int outputHeight, StringBuilder error, int errorCapacity);
 
-        [DllImport(LibraryName, EntryPoint = "roptixRender", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        [DllImport(LibraryName, EntryPoint = "roptixUploadMesh", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         [return: MarshalAs(UnmanagedType.I1)]
-        public static extern bool Render(
+        public static extern bool UploadMesh(
             IntPtr handle,
-            int renderWidth,
-            int renderHeight,
-            int outputWidth,
-            int outputHeight,
-            OptixCamera camera,
-            OptixRenderSettings settings,
+            int meshId,
             float[] vertices,
             int vertexFloatCount,
             float[] normals,
@@ -660,8 +660,33 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             int texCoordFloatCount,
             uint[] indices,
             int indexCount,
-            uint[] triangleMaterialIndices,
-            int triangleMaterialIndexCount,
+            StringBuilder error,
+            int errorCapacity);
+
+        [DllImport(LibraryName, EntryPoint = "roptixUpdateMeshVertices", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        public static extern bool UpdateMeshVertices(
+            IntPtr handle,
+            int meshId,
+            float[] vertices,
+            int vertexFloatCount,
+            StringBuilder error,
+            int errorCapacity);
+
+        [DllImport(LibraryName, EntryPoint = "roptixRenderInstances", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        public static extern bool RenderInstances(
+            IntPtr handle,
+            int renderWidth,
+            int renderHeight,
+            int outputWidth,
+            int outputHeight,
+            OptixCamera camera,
+            OptixRenderSettings settings,
+            int[] meshIds,
+            int instanceCount,
+            int[] materialIndices,
+            float[] transforms,
             float[] materialParameters,
             int materialFloatCount,
             int[] materialAlbedoTextureIndices,

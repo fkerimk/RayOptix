@@ -71,7 +71,7 @@ struct LaunchParams {
     Float3 cameraUp;
     float tanHalfFovY;
     NativeRenderSettings settings;
-    OptixTraversableHandle handle;
+    OptixTraversableHandle iasHandle;
     unsigned int frameIndex;
     float currentViewProjection[16];
 };
@@ -314,7 +314,7 @@ static __forceinline__ __device__ int TraceOcclusion(float3 origin, float3 direc
     unsigned int payloadHigh = static_cast<unsigned int>(reinterpret_cast<unsigned long long>(&payload) >> 32);
 
     optixTrace(
-        params.handle,
+        params.iasHandle,
         origin,
         direction,
         0.001f,
@@ -346,7 +346,6 @@ extern "C" __global__ void __closesthit__ch() {
     const float3* normals = reinterpret_cast<const float3*>(hitData->normals);
     const float2* texCoords = reinterpret_cast<const float2*>(hitData->texCoords);
     const TriangleIndices* indices = reinterpret_cast<const TriangleIndices*>(hitData->indices);
-    const unsigned int* triangleMaterialIndices = reinterpret_cast<const unsigned int*>(hitData->triangleMaterialIndices);
 
     const unsigned int primitiveIndex = optixGetPrimitiveIndex();
     const TriangleIndices triangle = indices[primitiveIndex];
@@ -371,7 +370,8 @@ extern "C" __global__ void __closesthit__ch() {
         shadingNormal = -shadingNormal;
     }
 
-    const float3 facingNormal = optixIsFrontFaceHit() ? shadingNormal : -shadingNormal;
+    float3 facingNormal = optixIsFrontFaceHit() ? shadingNormal : -shadingNormal;
+    facingNormal = optixTransformNormalFromObjectToWorldSpace(facingNormal);
 
     const float3 origin = optixGetWorldRayOrigin();
     const float3 direction = optixGetWorldRayDirection();
@@ -384,7 +384,7 @@ extern "C" __global__ void __closesthit__ch() {
     payload->texCoord = make_float2(
         uv0.x * b0 + uv1.x * b1 + uv2.x * b2,
         uv0.y * b0 + uv1.y * b1 + uv2.y * b2);
-    payload->materialIndex = static_cast<int>(triangleMaterialIndices[primitiveIndex]);
+    payload->materialIndex = static_cast<int>(optixGetInstanceId());
 }
 
 extern "C" __global__ void __raygen__rg() {
@@ -431,7 +431,7 @@ extern "C" __global__ void __raygen__rg() {
             unsigned int payloadHigh = static_cast<unsigned int>(reinterpret_cast<unsigned long long>(&payload) >> 32);
 
             optixTrace(
-                params.handle,
+                params.iasHandle,
                 origin,
                 direction,
                 0.001f,

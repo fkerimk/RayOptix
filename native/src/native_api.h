@@ -63,14 +63,10 @@ bool CreateRendererHandle(int renderWidth, int renderHeight, int outputWidth, in
 void DestroyRendererHandle(void* handle);
 void ReleaseRendererOutputTexture(void* handle, unsigned int textureId);
 bool ResizeRendererHandle(void* handle, int renderWidth, int renderHeight, int outputWidth, int outputHeight, char* error, int errorCapacity);
-bool RenderRendererHandle(
+
+bool UploadMeshRendererHandle(
     void* handle,
-    int renderWidth,
-    int renderHeight,
-    int outputWidth,
-    int outputHeight,
-    NativeCamera camera,
-    NativeRenderSettings settings,
+    int meshId,
     const float* vertices,
     int vertexFloatCount,
     const float* normals,
@@ -79,8 +75,29 @@ bool RenderRendererHandle(
     int texCoordFloatCount,
     const uint32_t* indices,
     int indexCount,
-    const uint32_t* triangleMaterialIndices,
-    int triangleMaterialIndexCount,
+    char* error,
+    int errorCapacity);
+
+bool UpdateMeshVerticesRendererHandle(
+    void* handle,
+    int meshId,
+    const float* vertices,
+    int vertexFloatCount,
+    char* error,
+    int errorCapacity);
+
+bool RenderInstancesRendererHandle(
+    void* handle,
+    int renderWidth,
+    int renderHeight,
+    int outputWidth,
+    int outputHeight,
+    NativeCamera camera,
+    NativeRenderSettings settings,
+    const int* meshIds,
+    int instanceCount,
+    const int* materialIndices,
+    const float* transforms,
     const float* materialParameters,
     int materialFloatCount,
     const int32_t* materialAlbedoTextureIndices,

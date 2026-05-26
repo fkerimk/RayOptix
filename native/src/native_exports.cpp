@@ -16,14 +16,9 @@ extern "C" bool roptixResize(void* handle, int renderWidth, int renderHeight, in
     return ResizeRendererHandle(handle, renderWidth, renderHeight, outputWidth, outputHeight, error, errorCapacity);
 }
 
-extern "C" bool roptixRender(
+extern "C" bool roptixUploadMesh(
     void* handle,
-    int renderWidth,
-    int renderHeight,
-    int outputWidth,
-    int outputHeight,
-    NativeCamera camera,
-    NativeRenderSettings settings,
+    int meshId,
     const float* vertices,
     int vertexFloatCount,
     const float* normals,
@@ -32,8 +27,51 @@ extern "C" bool roptixRender(
     int texCoordFloatCount,
     const uint32_t* indices,
     int indexCount,
-    const uint32_t* triangleMaterialIndices,
-    int triangleMaterialIndexCount,
+    char* error,
+    int errorCapacity) {
+    return UploadMeshRendererHandle(
+        handle,
+        meshId,
+        vertices,
+        vertexFloatCount,
+        normals,
+        normalFloatCount,
+        texCoords,
+        texCoordFloatCount,
+        indices,
+        indexCount,
+        error,
+        errorCapacity);
+}
+
+extern "C" bool roptixUpdateMeshVertices(
+    void* handle,
+    int meshId,
+    const float* vertices,
+    int vertexFloatCount,
+    char* error,
+    int errorCapacity) {
+    return UpdateMeshVerticesRendererHandle(
+        handle,
+        meshId,
+        vertices,
+        vertexFloatCount,
+        error,
+        errorCapacity);
+}
+
+extern "C" bool roptixRenderInstances(
+    void* handle,
+    int renderWidth,
+    int renderHeight,
+    int outputWidth,
+    int outputHeight,
+    NativeCamera camera,
+    NativeRenderSettings settings,
+    const int* meshIds,
+    int instanceCount,
+    const int* materialIndices,
+    const float* transforms,
     const float* materialParameters,
     int materialFloatCount,
     const int32_t* materialAlbedoTextureIndices,
@@ -47,7 +85,7 @@ extern "C" bool roptixRender(
     NativeFrameStats* stats,
     char* error,
     int errorCapacity) {
-    return RenderRendererHandle(
+    return RenderInstancesRendererHandle(
         handle,
         renderWidth,
         renderHeight,
@@ -55,16 +93,10 @@ extern "C" bool roptixRender(
         outputHeight,
         camera,
         settings,
-        vertices,
-        vertexFloatCount,
-        normals,
-        normalFloatCount,
-        texCoords,
-        texCoordFloatCount,
-        indices,
-        indexCount,
-        triangleMaterialIndices,
-        triangleMaterialIndexCount,
+        meshIds,
+        instanceCount,
+        materialIndices,
+        transforms,
         materialParameters,
         materialFloatCount,
         materialAlbedoTextureIndices,
