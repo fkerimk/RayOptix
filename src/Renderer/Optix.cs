@@ -74,6 +74,10 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private OptixFrameStats lastFrameStats;
     private double lastInteropMs;
     private double lastTextureUploadMs;
+    private int lastSceneMaterialCount;
+    private int lastSceneTexturedMaterialCount;
+    private int lastSceneTextureCount;
+    private Vector4 lastSceneUvRange;
 
     public override string name => initError is null ? "OptiX" : "OptiX (Unavailable)";
 
@@ -393,6 +397,8 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         DrawText($"Denoise/Present: {lastFrameStats.DenoiseMs:0.0} / {lastFrameStats.ReadbackMs:0.0} ms", 10, 272, 20, Color.Maroon);
         DrawText($"ToneMap/CSharp: {lastFrameStats.ToneMapMs:0.0} / {lastTextureUploadMs:0.0} ms", 10, 296, 20, Color.Maroon);
         DrawText($"Denoised Frame: {(lastFrameStats.DenoisedThisFrame != 0 ? "YES" : "NO")}", 10, 320, 20, Color.Maroon);
+        DrawText($"Scene Mats/TexMats/Tex: {lastSceneMaterialCount}/{lastSceneTexturedMaterialCount}/{lastSceneTextureCount}", 10, 344, 20, Color.Maroon);
+        DrawText($"UV MinMax: {lastSceneUvRange.X:0.00},{lastSceneUvRange.Y:0.00} / {lastSceneUvRange.Z:0.00},{lastSceneUvRange.W:0.00}", 10, 368, 20, Color.Maroon);
     }
 
     private void LogErrorOnce(string? error) {
@@ -419,6 +425,10 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         var textureMetadata = new List<int>();
         var materialLookup = new Dictionary<MaterialData, uint>(ReferenceEqualityComparer.Instance);
         var textureLookup = new Dictionary<TextureData, int>(ReferenceEqualityComparer.Instance);
+        var minU = float.PositiveInfinity;
+        var minV = float.PositiveInfinity;
+        var maxU = float.NegativeInfinity;
+        var maxV = float.NegativeInfinity;
 
         foreach (var drawCall in drawCalls) {
             var geometry = drawCall.meshData.CreateOptixGeometry(drawCall.matrix);
@@ -429,6 +439,13 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
             normals.AddRange(geometry.Normals);
             texCoords.AddRange(geometry.TexCoords);
 
+            for (var texCoordIndex = 0; texCoordIndex + 1 < geometry.TexCoords.Length; texCoordIndex += 2) {
+                minU = MathF.Min(minU, geometry.TexCoords[texCoordIndex]);
+                minV = MathF.Min(minV, geometry.TexCoords[texCoordIndex + 1]);
+                maxU = MathF.Max(maxU, geometry.TexCoords[texCoordIndex]);
+                maxV = MathF.Max(maxV, geometry.TexCoords[texCoordIndex + 1]);
+            }
+
             for (var index = 0; index < geometry.Indices.Length; index++) {
                 indices.Add((ushort)(geometry.Indices[index] + vertexOffset));
             }
@@ -437,6 +454,13 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
                 triangleMaterialIndices.Add(materialIndex);
             }
         }
+
+        lastSceneMaterialCount = materialAlbedoTextureIndices.Count;
+        lastSceneTexturedMaterialCount = materialAlbedoTextureIndices.Count(index => index >= 0);
+        lastSceneTextureCount = textureMetadata.Count / 3;
+        lastSceneUvRange = float.IsInfinity(minU)
+            ? Vector4.Zero
+            : new Vector4(minU, minV, maxU, maxV);
 
         return new OptixScene(
             vertices.ToArray(),
@@ -468,6 +492,8 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         }
 
         int GetOrAddTexture(TextureData? textureData) {
+
+            textureData?.EnsureOptixPixels();
 
             if (textureData?.OptixPixels == null ||
                 textureData.OptixPixels.Length == 0 ||

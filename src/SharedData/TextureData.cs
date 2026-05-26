@@ -91,13 +91,16 @@ internal sealed unsafe class TextureData(string? filePath = null) : SharedData {
         OptixHeight = 0;
     }
 
-    private bool TryLoadImageForOptix(out Image image) {
+    public void EnsureOptixPixels() {
 
-        if (RaylibTexture.HasValue) {
-            image = Raylib.LoadImageFromTexture(RaylibTexture.Value);
-            return image.Data != null;
+        if (OptixPixels is { Length: > 0 } && OptixWidth > 0 && OptixHeight > 0) {
+            return;
         }
 
+        BuildOptix();
+    }
+
+    private bool TryLoadImageForOptix(out Image image) {
         if (EncodedBytes is { Length: > 0 }) {
             var extension = Path.GetExtension(FilePath ?? Name ?? ".png");
             if (string.IsNullOrWhiteSpace(extension)) {
@@ -110,6 +113,11 @@ internal sealed unsafe class TextureData(string? filePath = null) : SharedData {
 
         if (!string.IsNullOrWhiteSpace(FilePath) && File.Exists(FilePath)) {
             image = Raylib.LoadImage(FilePath);
+            return image.Data != null;
+        }
+
+        if (RaylibTexture.HasValue) {
+            image = Raylib.LoadImageFromTexture(RaylibTexture.Value);
             return image.Data != null;
         }
 

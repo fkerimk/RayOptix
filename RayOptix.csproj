@@ -16,4 +16,12 @@
         <PackageReference Include="AssimpNetter" Version="6.0.4" />
     </ItemGroup>
 
+    <Target Name="CopyNativeOptixLibrary" AfterTargets="Build" Condition="'$(OS)' != 'Windows_NT'">
+        <Copy
+            SourceFiles="$(MSBuildProjectDirectory)/native/build/Debug/linux-x64/RayOptixNative.so"
+            DestinationFiles="$(TargetDir)RayOptixNative.so"
+            SkipUnchangedFiles="true"
+            Condition="Exists('$(MSBuildProjectDirectory)/native/build/Debug/linux-x64/RayOptixNative.so')" />
+    </Target>
+
 </Project>

@@ -224,7 +224,7 @@ static __forceinline__ __device__ float3 SampleAlbedo(const NativeMaterial& mate
     const float wrappedU = WrapUv(texCoord.x);
     const float wrappedV = WrapUv(texCoord.y);
     const int x = min(max(static_cast<int>(wrappedU * static_cast<float>(textureWidth)), 0), textureWidth - 1);
-    const int y = min(max(static_cast<int>((1.0f - wrappedV) * static_cast<float>(textureHeight)), 0), textureHeight - 1);
+    const int y = min(max(static_cast<int>(wrappedV * static_cast<float>(textureHeight)), 0), textureHeight - 1);
     const uchar4 pixel = texturePixels[pixelOffset + y * textureWidth + x];
     const float3 textureColor = make_float3(
         static_cast<float>(pixel.x) / 255.0f,
@@ -358,12 +358,20 @@ extern "C" __global__ void __closesthit__ch() {
     const float3 v0 = vertices[triangle.x];
     const float3 v1 = vertices[triangle.y];
     const float3 v2 = vertices[triangle.z];
+    const float3 n0 = normals[triangle.x];
+    const float3 n1 = normals[triangle.y];
+    const float3 n2 = normals[triangle.z];
     const float2 uv0 = texCoords[triangle.x];
     const float2 uv1 = texCoords[triangle.y];
     const float2 uv2 = texCoords[triangle.z];
 
     const float3 geometricNormal = Normalize(Cross(v1 - v0, v2 - v0));
-    const float3 facingNormal = optixIsFrontFaceHit() ? geometricNormal : -geometricNormal;
+    float3 shadingNormal = Normalize(n0 * b0 + n1 * b1 + n2 * b2);
+    if (Dot(shadingNormal, geometricNormal) < 0.0f) {
+        shadingNormal = -shadingNormal;
+    }
+
+    const float3 facingNormal = optixIsFrontFaceHit() ? shadingNormal : -shadingNormal;
 
     const float3 origin = optixGetWorldRayOrigin();
     const float3 direction = optixGetWorldRayDirection();
