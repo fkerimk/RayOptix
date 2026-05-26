@@ -1,6 +1,6 @@
 internal sealed class AnimationData(List<AnimationClipData> clips) : SharedData {
 
-    public List<AnimationClipData> Clips = clips;
+    public readonly List<AnimationClipData> Clips = clips;
 
     protected override void BuildRaylib() {
     }
@@ -20,7 +20,7 @@ internal sealed class AnimationClipData {
     public string Name = "";
     public double Duration;
     public double TicksPerSecond;
-    public bool Loop = true;
+    public readonly bool Loop = true;
     public readonly List<AnimationChannelData> Channels = [];
     public readonly Dictionary<string, AnimationChannelData> ChannelMap = [];
 }

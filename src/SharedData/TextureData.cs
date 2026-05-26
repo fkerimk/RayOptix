@@ -2,7 +2,7 @@ using Raylib_cs;
 
 internal sealed class TextureData(string? filePath = null) : SharedData {
 
-    public string? FilePath = filePath;
+    public readonly string? FilePath = filePath;
     public string? Name;
     public byte[]? EncodedBytes;
 

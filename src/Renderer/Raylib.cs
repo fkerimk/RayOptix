@@ -8,7 +8,7 @@ internal class RaylibRenderer(CameraData cameraData) : Renderer {
     private int renderWidth;
     private int renderHeight;
 
-    public override string Name => "Raylib";
+    public override string name => "Raylib";
 
     public override void Init() {
 
@@ -50,6 +50,18 @@ internal class RaylibRenderer(CameraData cameraData) : Renderer {
     public override void DrawMesh(MeshData meshData, MaterialData materialData, Matrix4x4 matrix) {
 
         Raylib.DrawMesh(meshData.RaylibMesh!.Value, materialData.RaylibMaterial!.Value, matrix);
+    }
+
+    public override void DrawModel(ModelData modelData, Vector3 position, Vector3 rotation, Vector3 scale) {
+        
+        var transform = Util.TransformMatrix(position, rotation, scale);
+
+        foreach (var mesh in modelData.Meshes) {
+            var material = mesh.MaterialIndex >= 0 && mesh.MaterialIndex < modelData.Materials.Count && modelData.Materials[mesh.MaterialIndex].RaylibMaterial.HasValue
+                ? modelData.Materials[mesh.MaterialIndex].RaylibMaterial!.Value
+                : mesh.FallbackMaterial;
+            Raylib.DrawMesh(mesh.Mesh, material, transform);
+        }
     }
 
     private void HandleDebugInput() {

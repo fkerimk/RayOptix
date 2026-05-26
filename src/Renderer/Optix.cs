@@ -75,7 +75,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     private double lastInteropMs;
     private double lastTextureUploadMs;
 
-    public override string Name => initError is null ? "OptiX" : "OptiX (Unavailable)";
+    public override string name => initError is null ? "OptiX" : "OptiX (Unavailable)";
 
     public override void Init() {
 
@@ -95,6 +95,11 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
     public override void DrawMesh(MeshData meshData, MaterialData materialData, Matrix4x4 matrix) {
 
         drawCalls.Add(new DrawCall(meshData, materialData, matrix));
+    }
+
+    public override void DrawModel(ModelData modelData, Vector3 position, Vector3 rotation, Vector3 scale) {
+        
+        throw new NotImplementedException();
     }
 
     public override void End() {
@@ -393,9 +398,9 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
         foreach (var drawCall in drawCalls) {
 
-            var geometry = drawCall.MeshData.CreateOptixGeometry(drawCall.Matrix);
+            var geometry = drawCall.meshData.CreateOptixGeometry(drawCall.matrix);
             var vertexOffset = vertices.Count / 3;
-            var material = drawCall.MaterialData.OptixMaterialData
+            var material = drawCall.materialData.OptixMaterialData
                            ?? throw new InvalidOperationException("OptiX material data has not been built.");
             var materialIndex = (uint)materials.Count;
 
@@ -484,13 +489,13 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
 
         foreach (var drawCall in drawCalls) {
 
-            hash.Add(RuntimeHelpers.GetHashCode(drawCall.MeshData));
-            hash.Add(drawCall.MaterialData.Color.X);
-            hash.Add(drawCall.MaterialData.Color.Y);
-            hash.Add(drawCall.MaterialData.Color.Z);
-            hash.Add(drawCall.MaterialData.Color.W);
-            hash.Add(drawCall.MaterialData.Reflectivity);
-            AddMatrixToHash(ref hash, drawCall.Matrix);
+            hash.Add(RuntimeHelpers.GetHashCode(drawCall.meshData));
+            hash.Add(drawCall.materialData.Color.X);
+            hash.Add(drawCall.materialData.Color.Y);
+            hash.Add(drawCall.materialData.Color.Z);
+            hash.Add(drawCall.materialData.Color.W);
+            hash.Add(drawCall.materialData.Reflectivity);
+            AddMatrixToHash(ref hash, drawCall.matrix);
         }
 
         return hash.ToHashCode();
@@ -527,7 +532,7 @@ internal sealed class OptixRenderer(CameraData cameraData) : Renderer {
         hash.Add(matrix.M44);
     }
 
-    private readonly record struct DrawCall(MeshData MeshData, MaterialData MaterialData, Matrix4x4 Matrix);
+    private readonly record struct DrawCall(MeshData meshData, MaterialData materialData, Matrix4x4 matrix);
 
     private static class OptixNative {
 

@@ -3,12 +3,12 @@ using Raylib_cs;
 
 internal class MeshData(int vertexCount, int triangleCount, float[] vertices, float[] normals, float[] texCoords, ushort[] indices) : SharedData {
     
-    public int VertexCount = vertexCount;
-    public int TriangleCount = triangleCount;
-    public float[] Vertices = vertices;
-    public float[] Normals = normals;
-    public float[] TexCoords = texCoords;
-    public ushort[] Indices = indices;
+    public readonly int VertexCount = vertexCount;
+    public readonly int TriangleCount = triangleCount;
+    public readonly float[] Vertices = vertices;
+    public readonly float[] Normals = normals;
+    public readonly float[] TexCoords = texCoords;
+    public readonly ushort[] Indices = indices;
     
     public Mesh? RaylibMesh;
     public OptixMesh? OptixMeshData;
