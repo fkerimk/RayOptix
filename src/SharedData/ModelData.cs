@@ -24,6 +24,7 @@ internal sealed class ModelData(string filePath) : SharedData {
     public readonly List<BoneInfoData> Bones = [];
     public readonly Dictionary<string, List<BoneInfoData>> BoneMap = [];
     public readonly List<TextureData> Textures = [];
+    public readonly List<MaterialData> Materials = [];
 
     public AnimationData Animation = new([]);
     public ModelNodeData RootNode = new();
@@ -53,6 +54,9 @@ internal sealed class ModelData(string filePath) : SharedData {
 
         var boneMapping = new Dictionary<string, List<int>>();
         var animationClips = scene.Animations.Select(ProcessAnimation).ToList();
+        var embeddedTextureLookup = LoadEmbeddedTextures(scene);
+
+        BuildMaterials(scene, embeddedTextureLookup);
 
         for (var i = 0; i < scene.Meshes.Count; i++) {
             Meshes.Add(ProcessMesh(scene.Meshes[i], Bones, boneMapping));
@@ -93,6 +97,12 @@ internal sealed class ModelData(string filePath) : SharedData {
         }
 
         Textures.Clear();
+
+        foreach (var material in Materials) {
+            material.Unload();
+        }
+
+        Materials.Clear();
         Animation = new AnimationData([]);
         RootNode = new ModelNodeData();
         GlobalInverse = Matrix4x4.Identity;
@@ -149,13 +159,130 @@ internal sealed class ModelData(string filePath) : SharedData {
         var transform = CreateTransformMatrix(Position, RotationDegrees, Scale);
 
         foreach (var mesh in Meshes) {
-            DrawMesh(mesh.Mesh, mesh.Material, transform);
+            var material = mesh.MaterialIndex >= 0 && mesh.MaterialIndex < Materials.Count && Materials[mesh.MaterialIndex].RaylibMaterial.HasValue
+                ? Materials[mesh.MaterialIndex].RaylibMaterial!.Value
+                : mesh.FallbackMaterial;
+            DrawMesh(mesh.Mesh, material, transform);
         }
     }
 
     private static Assimp.Scene ImportScene(string path) {
 
+        Context.RemoveConfigs();
+
+        if (string.Equals(Path.GetExtension(path), ".fbx", StringComparison.OrdinalIgnoreCase)) {
+            Context.SetConfig(new Assimp.Configs.FBXImportEmbeddedTexturesConfig(true));
+            Context.SetConfig(new Assimp.Configs.FBXPreservePivotsConfig(false));
+            Context.SetConfig(new Assimp.Configs.FBXOptimizeEmptyAnimationCurvesConfig(true));
+        }
+
         return Context.ImportFile(path, DefaultPostProcessSteps);
+    }
+
+    private void BuildMaterials(Assimp.Scene scene, Dictionary<string, TextureData> embeddedTextureLookup) {
+
+        var modelDirectory = Path.GetDirectoryName(Path.GetFullPath(FilePath)) ?? Directory.GetCurrentDirectory();
+
+        for (var materialIndex = 0; materialIndex < scene.MaterialCount; materialIndex++) {
+            var sourceMaterial = scene.Materials[materialIndex];
+            var material = new MaterialData {
+                Color = sourceMaterial.HasColorDiffuse ? sourceMaterial.ColorDiffuse : Vector4.One,
+                EmissiveColor = sourceMaterial.HasColorEmissive ? sourceMaterial.ColorEmissive : Vector4.Zero,
+                Reflectivity = sourceMaterial.HasReflectivity ? sourceMaterial.Reflectivity : 0f
+            };
+
+            BindTexture(sourceMaterial, TextureType.BaseColor, MaterialMapIndex.Albedo, material, embeddedTextureLookup, modelDirectory);
+            BindTexture(sourceMaterial, TextureType.Diffuse, MaterialMapIndex.Albedo, material, embeddedTextureLookup, modelDirectory);
+            BindTexture(sourceMaterial, TextureType.NormalCamera, MaterialMapIndex.Normal, material, embeddedTextureLookup, modelDirectory);
+            BindTexture(sourceMaterial, TextureType.Normals, MaterialMapIndex.Normal, material, embeddedTextureLookup, modelDirectory);
+            BindTexture(sourceMaterial, TextureType.Height, MaterialMapIndex.Normal, material, embeddedTextureLookup, modelDirectory);
+            BindTexture(sourceMaterial, TextureType.Metalness, MaterialMapIndex.Metalness, material, embeddedTextureLookup, modelDirectory);
+            BindTexture(sourceMaterial, TextureType.Roughness, MaterialMapIndex.Roughness, material, embeddedTextureLookup, modelDirectory);
+            BindTexture(sourceMaterial, TextureType.AmbientOcclusion, MaterialMapIndex.Occlusion, material, embeddedTextureLookup, modelDirectory);
+            BindTexture(sourceMaterial, TextureType.Lightmap, MaterialMapIndex.Occlusion, material, embeddedTextureLookup, modelDirectory);
+            BindTexture(sourceMaterial, TextureType.EmissionColor, MaterialMapIndex.Emission, material, embeddedTextureLookup, modelDirectory);
+            BindTexture(sourceMaterial, TextureType.Emissive, MaterialMapIndex.Emission, material, embeddedTextureLookup, modelDirectory);
+
+            material.Build();
+            Materials.Add(material);
+        }
+    }
+
+    private Dictionary<string, TextureData> LoadEmbeddedTextures(Assimp.Scene scene) {
+
+        var lookup = new Dictionary<string, TextureData>(StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < scene.TextureCount; i++) {
+            var texture = scene.Textures[i];
+
+            if (!texture.IsCompressed || !texture.HasCompressedData || texture.CompressedData is not { Length: > 0 }) {
+                continue;
+            }
+
+            var textureData = new TextureData(NormalizeTextureExtension(texture.CompressedFormatHint, texture.Filename)) {
+                Name = BuildEmbeddedTextureName(texture.Filename, i),
+                EncodedBytes = texture.CompressedData
+            };
+            textureData.Build();
+            Textures.Add(textureData);
+
+            RegisterTextureKey(lookup, $"*{i}", textureData);
+            RegisterTextureKey(lookup, texture.Filename, textureData);
+            RegisterTextureKey(lookup, Path.GetFileName(texture.Filename), textureData);
+            RegisterTextureKey(lookup, Path.GetFileNameWithoutExtension(texture.Filename), textureData);
+        }
+
+        return lookup;
+    }
+
+    private void BindTexture(Assimp.Material sourceMaterial, TextureType textureType, MaterialMapIndex mapIndex, MaterialData material, Dictionary<string, TextureData> embeddedTextureLookup, string modelDirectory) {
+
+        if (material.Textures.ContainsKey(mapIndex)) {
+            return;
+        }
+
+        var count = sourceMaterial.GetMaterialTextureCount(textureType);
+        for (var i = 0; i < count; i++) {
+            if (!sourceMaterial.GetMaterialTexture(textureType, i, out var slot)) {
+                continue;
+            }
+
+            var texture = ResolveTexture(slot.FilePath, embeddedTextureLookup, modelDirectory);
+            if (texture == null) {
+                continue;
+            }
+
+            material.Textures[mapIndex] = texture;
+            return;
+        }
+    }
+
+    private TextureData? ResolveTexture(string? filePath, Dictionary<string, TextureData> embeddedTextureLookup, string modelDirectory) {
+
+        if (string.IsNullOrWhiteSpace(filePath)) {
+            return null;
+        }
+
+        if (embeddedTextureLookup.TryGetValue(filePath, out var embeddedTexture)) {
+            return embeddedTexture;
+        }
+
+        var resolvedPath = Path.GetFullPath(Path.Combine(modelDirectory, filePath));
+        if (!File.Exists(resolvedPath)) {
+            return null;
+        }
+
+        var existing = Textures.FirstOrDefault(texture => string.Equals(texture.FilePath, resolvedPath, StringComparison.OrdinalIgnoreCase));
+        if (existing != null) {
+            return existing;
+        }
+
+        var textureData = new TextureData(resolvedPath) {
+            Name = Path.GetFileNameWithoutExtension(resolvedPath)
+        };
+        textureData.Build();
+        Textures.Add(textureData);
+        return textureData;
     }
 
     private static ModelMeshData ProcessMesh(Assimp.Mesh mesh, List<BoneInfoData> bones, Dictionary<string, List<int>> boneMapping) {
@@ -219,7 +346,7 @@ internal sealed class ModelData(string filePath) : SharedData {
 
         var material = LoadMaterialDefault();
         var uploadedMesh = CreateUploadedMesh(vertices, normals, texCoords, indices);
-        return new ModelMeshData(uploadedMesh, material, vertices, normals, animatedVertices, animatedNormals, texCoords, indices, boneData, mesh.Bones.Count > 0);
+        return new ModelMeshData(uploadedMesh, material, mesh.MaterialIndex, vertices, normals, animatedVertices, animatedNormals, texCoords, indices, boneData, mesh.Bones.Count > 0);
     }
 
     private static ModelNodeData ProcessNode(Node node) {
@@ -453,12 +580,12 @@ internal sealed class ModelData(string filePath) : SharedData {
             }
         }
 
-        return Math.Max(0, keys.Count - 2);
+        return keys.Count - 1;
     }
 
     private static int FindNextKeyIndex<T>(List<(double Time, T Value)> keys, double time) {
 
-        return Math.Min(FindKeyIndex(keys, time) + 1, keys.Count - 1);
+        return (FindKeyIndex(keys, time) + 1) % keys.Count;
     }
 
     private static float GetBlendFactor<T>(List<(double Time, T Value)> keys, double time) {
@@ -466,7 +593,11 @@ internal sealed class ModelData(string filePath) : SharedData {
         var current = keys[FindKeyIndex(keys, time)];
         var next = keys[FindNextKeyIndex(keys, time)];
         var length = next.Time - current.Time;
-        return length <= double.Epsilon ? 0f : (float)((time - current.Time) / length);
+        if (next.Time <= current.Time) {
+            return 0f;
+        }
+
+        return Math.Clamp((float)((time - current.Time) / length), 0f, 1f);
     }
 
     private static Matrix4x4 CreateTransformMatrix(Vector3 position, Vector3 rotationDegrees, Vector3 scale) {
@@ -481,11 +612,41 @@ internal sealed class ModelData(string filePath) : SharedData {
     private static Matrix4x4 ToNumericsMatrix(Matrix4x4 matrix) => Matrix4x4.Transpose(matrix);
     private static Vector3 ToNumericsVector(Vector3 vector) => vector;
     private static Quaternion ToNumericsQuaternion(Quaternion quaternion) => quaternion;
+
+    private static string BuildEmbeddedTextureName(string? filename, int index) {
+
+        var name = Path.GetFileNameWithoutExtension(filename);
+        return string.IsNullOrWhiteSpace(name) ? $"EmbeddedTexture_{index}" : name;
+    }
+
+    private static string NormalizeTextureExtension(string? formatHint, string? filename) {
+
+        var extension = Path.GetExtension(filename);
+        if (!string.IsNullOrWhiteSpace(extension)) {
+            return extension.StartsWith('.') ? extension : "." + extension;
+        }
+
+        if (!string.IsNullOrWhiteSpace(formatHint)) {
+            return "." + formatHint.Trim().TrimStart('.').ToLowerInvariant();
+        }
+
+        return ".png";
+    }
+
+    private static void RegisterTextureKey(Dictionary<string, TextureData> lookup, string? key, TextureData texture) {
+
+        if (string.IsNullOrWhiteSpace(key)) {
+            return;
+        }
+
+        lookup[key] = texture;
+    }
 }
 
 internal sealed class ModelMeshData(
     Mesh mesh,
     Material material,
+    int materialIndex,
     Vector3[] vertices,
     Vector3[] normals,
     Vector3[] animatedVertices,
@@ -496,7 +657,8 @@ internal sealed class ModelMeshData(
     bool usesSkinning) {
 
     public Mesh Mesh = mesh;
-    public Material Material = material;
+    public Material FallbackMaterial = material;
+    public int MaterialIndex = materialIndex;
     public Vector3[] Vertices = vertices;
     public Vector3[] Normals = normals;
     public Vector3[] AnimatedVertices = animatedVertices;
@@ -508,7 +670,7 @@ internal sealed class ModelMeshData(
 
     public void Unload() {
 
-        UnloadMaterial(Material);
+        UnloadMaterial(FallbackMaterial);
         UnloadMesh(Mesh);
     }
 }
