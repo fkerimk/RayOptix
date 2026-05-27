@@ -2,13 +2,11 @@ using System.Numerics;
 using Assimp;
 using Raylib_cs;
 using static Raylib_cs.Raylib;
-using Material = Raylib_cs.Material;
 using Matrix4x4 = System.Numerics.Matrix4x4;
-using Mesh = Raylib_cs.Mesh;
 using Quaternion = System.Numerics.Quaternion;
 
-internal sealed class ModelData(string path) : SharedData {
-
+internal sealed class Model : SharedData {
+    
     private static readonly AssimpContext Context = new();
     
     private const PostProcessSteps DefaultPostProcessSteps =
@@ -22,8 +20,8 @@ internal sealed class ModelData(string path) : SharedData {
         | PostProcessSteps.OptimizeMeshes
         ;
 
-    public readonly List<MeshData> Meshes = [];
-    public readonly List<MaterialData> Materials = [];
+    public readonly List<Mesh> Meshes = [];
+    public readonly List<Material> Materials = [];
     private readonly List<BoneInfoData> _bones = [];
     private readonly Dictionary<string, List<BoneInfoData>> _boneMap = [];
     private readonly List<TextureData> _textures = [];
@@ -35,28 +33,39 @@ internal sealed class ModelData(string path) : SharedData {
     private ModelNodeData _rootNode = new();
     private Matrix4x4 _globalInverse = Matrix4x4.Identity;
     
-    public Vector3 Position = Vector3.Zero;
-    public Vector3 RotationDegrees = Vector3.Zero;
-    public Vector3 Scale = Vector3.One;
+    public Vector3 Position;
+    public Vector3 Rotation;
+    public Vector3 Scale;
 
     private int _activeAnimationIndex;
     private float _animationTimeTicks;
+    private readonly string _path;
 
     private bool HasAnimation => _animation.Clips.Count > 0;
+    
+    public Model(string path, float scale = 1) : base("model_" + path) {
 
+        _path = path;
+        
+        Position = Vector3.Zero;
+        Rotation = Vector3.Zero;
+        Scale = Vector3.Create(scale);
+        
+        Build();
+    }
+    
     protected override void BuildRaylib() {
 
         UnloadRaylib();
 
-        var scene = ImportScene(path);
+        var scene = ImportScene(_path);
 
-        if (scene.RootNode == null) {
-            throw new InvalidOperationException($"Model root node was missing for '{path}'.");
-        }
+        if (scene.RootNode == null)
+            throw new InvalidOperationException($"Model root node was missing for '{_path}'.");
 
         var globalInverse = ToNumericsMatrix(scene.RootNode.Transform);
         Matrix4x4.Invert(globalInverse, out globalInverse);
-        this._globalInverse = globalInverse;
+        _globalInverse = globalInverse;
 
         var boneMapping = new Dictionary<string, List<int>>();
         var animationClips = scene.Animations.Select(ProcessAnimation).ToList();
@@ -85,43 +94,32 @@ internal sealed class ModelData(string path) : SharedData {
         }
 
         _animatedNodeNames.Clear();
-        foreach (var boneName in _boneMap.Keys) {
+        
+        foreach (var boneName in _boneMap.Keys)
             _animatedNodeNames.Add(boneName);
-        }
 
-        foreach (var animation in _animation.Clips) {
-            foreach (var nodeName in animation.ChannelMap.Keys) {
-                _animatedNodeNames.Add(nodeName);
-            }
-        }
+        foreach (var nodeName in _animation.Clips.SelectMany(animation => animation.ChannelMap.Keys))
+            _animatedNodeNames.Add(nodeName);
 
         _activeAnimationIndex = 0;
         _animationTimeTicks = 0;
 
-        if (_bones.Count > 0) {
-            ApplyBindPose();
-        }
+        if (_bones.Count > 0) ApplyBindPose();
     }
 
     protected override void UnloadRaylib() {
 
-        foreach (var mesh in Meshes) {
-            mesh.Unload();
-        }
+        foreach (var mesh in Meshes) mesh.Unload();
 
         Meshes.Clear();
         _bones.Clear();
         _boneMap.Clear();
 
-        foreach (var texture in _textures) {
-            texture.Unload();
-        }
+        foreach (var texture in _textures) texture.Unload();
 
         _textures.Clear();
 
-        foreach (var material in Materials) {
-            material.Unload();
-        }
+        foreach (var material in Materials) material.Unload();
 
         Materials.Clear();
         _bindMeshNodeTransforms = [];
@@ -133,56 +131,43 @@ internal sealed class ModelData(string path) : SharedData {
         _animationTimeTicks = 0;
     }
 
-    protected override void BuildOptix() {
-    }
-
-    protected override void UnloadOptix() {
-    }
-
     public void UpdateAnimation(float deltaTime) {
 
-        if (!HasAnimation || _bones.Count == 0) {
-            return;
-        }
+        if (!HasAnimation || _bones.Count == 0) return;
 
         var clip = _animation.Clips[_activeAnimationIndex];
         var ticksPerSecond = clip.TicksPerSecond > 0 ? clip.TicksPerSecond : 25.0;
         _animationTimeTicks += deltaTime * (float)ticksPerSecond;
 
         if (clip.Duration > 0) {
-            if (clip.Loop) {
-                _animationTimeTicks %= (float)clip.Duration;
-            } else {
-                _animationTimeTicks = MathF.Min(_animationTimeTicks, (float)clip.Duration);
-            }
+            
+            if (clip.Loop)
+                 _animationTimeTicks %= (float)clip.Duration;
+            else _animationTimeTicks = MathF.Min(_animationTimeTicks, (float)clip.Duration);
         }
 
         UpdateAnimationHierarchy(_rootNode, clip, _animationTimeTicks, Matrix4x4.Identity, Matrix4x4.Identity, _globalInverse, _boneMap);
 
         foreach (var mesh in Meshes) {
-            if (mesh.UsesSkinning) {
-                SkinMesh(mesh, _bones);
-            } else {
-                UpdateRigidMesh(mesh);
-            }
+            
+            if (mesh.UsesSkinning)
+                 SkinMesh(mesh, _bones);
+            else UpdateRigidMesh(mesh);
         }
     }
 
-    public void ApplyBindPose() {
+    private void ApplyBindPose() {
 
-        if (_bones.Count == 0) {
-            return;
-        }
+        if (_bones.Count == 0) return;
 
         ApplyBindPoseHierarchy(_rootNode, Matrix4x4.Identity, Matrix4x4.Identity, _globalInverse, _boneMap);
         Array.Copy(_currentMeshNodeTransforms, _bindMeshNodeTransforms, _currentMeshNodeTransforms.Length);
 
         foreach (var mesh in Meshes) {
-            if (mesh.UsesSkinning) {
-                SkinMesh(mesh, _bones);
-            } else {
-                ResetRigidMesh(mesh);
-            }
+            
+            if (mesh.UsesSkinning)
+                 SkinMesh(mesh, _bones);
+            else ResetRigidMesh(mesh);
         }
     }
 
@@ -191,6 +176,7 @@ internal sealed class ModelData(string path) : SharedData {
         Context.RemoveConfigs();
 
         if (string.Equals(Path.GetExtension(path), ".fbx", StringComparison.OrdinalIgnoreCase)) {
+            
             Context.SetConfig(new Assimp.Configs.FBXImportEmbeddedTexturesConfig(true));
             Context.SetConfig(new Assimp.Configs.FBXPreservePivotsConfig(false));
             Context.SetConfig(new Assimp.Configs.FBXOptimizeEmptyAnimationCurvesConfig(true));
@@ -201,11 +187,14 @@ internal sealed class ModelData(string path) : SharedData {
 
     private void BuildMaterials(Scene scene, Dictionary<string, TextureData> embeddedTextureLookup) {
 
-        var modelDirectory = Path.GetDirectoryName(Path.GetFullPath(path)) ?? Directory.GetCurrentDirectory();
+        var modelDirectory = Path.GetDirectoryName(Path.GetFullPath(_path)) ?? Directory.GetCurrentDirectory();
 
         for (var materialIndex = 0; materialIndex < scene.MaterialCount; materialIndex++) {
+            
             var sourceMaterial = scene.Materials[materialIndex];
-            var material = new MaterialData {
+            
+            var material = new Material {
+                
                 Color = sourceMaterial.HasColorDiffuse ? sourceMaterial.ColorDiffuse : Vector4.One,
                 EmissiveColor = sourceMaterial.HasColorEmissive ? sourceMaterial.ColorEmissive : Vector4.Zero,
                 Reflectivity = sourceMaterial.HasReflectivity ? sourceMaterial.Reflectivity : 0f
@@ -233,6 +222,7 @@ internal sealed class ModelData(string path) : SharedData {
         var lookup = new Dictionary<string, TextureData>(StringComparer.OrdinalIgnoreCase);
 
         for (var i = 0; i < scene.TextureCount; i++) {
+            
             var texture = scene.Textures[i];
 
             if (!texture.IsCompressed || !texture.HasCompressedData || texture.CompressedData is not { Length: > 0 }) {
@@ -243,7 +233,9 @@ internal sealed class ModelData(string path) : SharedData {
                 Name = BuildEmbeddedTextureName(texture.Filename, i),
                 EncodedBytes = texture.CompressedData
             };
+            
             textureData.Build();
+            
             _textures.Add(textureData);
 
             RegisterTextureKey(lookup, $"*{i}", textureData);
@@ -255,85 +247,79 @@ internal sealed class ModelData(string path) : SharedData {
         return lookup;
     }
 
-    private void BindTexture(Assimp.Material sourceMaterial, TextureType textureType, MaterialMapIndex mapIndex, MaterialData material, Dictionary<string, TextureData> embeddedTextureLookup, string modelDirectory) {
+    private void BindTexture(Assimp.Material sourceMaterial, TextureType textureType, MaterialMapIndex mapIndex, Material material, Dictionary<string, TextureData> embeddedTextureLookup, string modelDirectory) {
 
-        if (material.Textures.ContainsKey(mapIndex)) {
-            return;
-        }
+        if (material.Textures.ContainsKey(mapIndex)) return;
 
         var count = sourceMaterial.GetMaterialTextureCount(textureType);
+        
         for (var i = 0; i < count; i++) {
-            if (!sourceMaterial.GetMaterialTexture(textureType, i, out var slot)) {
-                continue;
-            }
+            
+            if (!sourceMaterial.GetMaterialTexture(textureType, i, out var slot)) continue;
 
             var texture = ResolveTexture(slot.FilePath, embeddedTextureLookup, modelDirectory);
-            if (texture == null) {
-                continue;
-            }
+            
+            if (texture == null)  continue;
 
             material.Textures[mapIndex] = texture;
+            
             return;
         }
     }
 
     private TextureData? ResolveTexture(string? filePath, Dictionary<string, TextureData> embeddedTextureLookup, string modelDirectory) {
 
-        if (string.IsNullOrWhiteSpace(filePath)) {
-            return null;
-        }
+        if (string.IsNullOrWhiteSpace(filePath)) return null;
 
-        if (embeddedTextureLookup.TryGetValue(filePath, out var embeddedTexture)) {
-            return embeddedTexture;
-        }
+        if (embeddedTextureLookup.TryGetValue(filePath, out var embeddedTexture)) return embeddedTexture;
 
         var resolvedPath = Path.GetFullPath(Path.Combine(modelDirectory, filePath));
-        if (!File.Exists(resolvedPath)) {
-            return null;
-        }
+        
+        if (!File.Exists(resolvedPath)) return null;
 
         var existing = _textures.FirstOrDefault(texture => string.Equals(texture.FilePath, resolvedPath, StringComparison.OrdinalIgnoreCase));
-        if (existing != null) {
-            return existing;
-        }
+        
+        if (existing != null) return existing;
 
         var textureData = new TextureData(resolvedPath) {
+            
             Name = Path.GetFileNameWithoutExtension(resolvedPath)
         };
+        
         textureData.Build();
         _textures.Add(textureData);
+        
         return textureData;
     }
 
-    private static MeshData ProcessMesh(Assimp.Mesh mesh, int meshIndex, List<BoneInfoData> bones, Dictionary<string, List<int>> boneMapping) {
+    private static Mesh ProcessMesh(Assimp.Mesh mesh, int meshIndex, List<BoneInfoData> bones, Dictionary<string, List<int>> boneMapping) {
 
         var vertices = new Vector3[mesh.VertexCount];
         var normals = new Vector3[mesh.VertexCount];
-        var animatedVertices = new Vector3[mesh.VertexCount];
-        var animatedNormals = new Vector3[mesh.VertexCount];
         var texCoords = new Vector2[mesh.VertexCount];
         var indices = new uint[mesh.FaceCount * 3];
         var boneData = new VertexBoneData[mesh.VertexCount];
 
         for (var i = 0; i < mesh.VertexCount; i++) {
+            
             vertices[i] = ToNumericsVector(mesh.Vertices[i]);
             normals[i] = ToNumericsVector(mesh.Normals[i]);
-            animatedVertices[i] = vertices[i];
-            animatedNormals[i] = normals[i];
 
-            if (mesh.HasTextureCoords(0)) {
+            if (mesh.HasTextureCoords(0)) 
                 texCoords[i] = new Vector2(mesh.TextureCoordinateChannels[0][i].X, mesh.TextureCoordinateChannels[0][i].Y);
-            }
         }
 
         for (var i = 0; i < mesh.FaceCount; i++) {
+            
             indices[i * 3] = (uint)mesh.Faces[i].Indices[0];
             indices[i * 3 + 1] = (uint)mesh.Faces[i].Indices[1];
             indices[i * 3 + 2] = (uint)mesh.Faces[i].Indices[2];
         }
 
         foreach (var bone in mesh.Bones) {
+            
             if (!boneMapping.TryGetValue(bone.Name, out var matchingIndices)) {
+                
                 matchingIndices = [];
                 boneMapping[bone.Name] = matchingIndices;
             }
@@ -342,16 +328,21 @@ internal sealed class ModelData(string path) : SharedData {
             var boneIndex = matchingIndices.FirstOrDefault(index => MatricesAreEqual(bones[index].Offset, offset), -1);
 
             if (boneIndex == -1) {
+                
                 boneIndex = bones.Count;
+                
                 var boneInfo = new BoneInfoData {
+                    
                     Name = bone.Name,
                     Index = boneIndex,
                     Offset = offset
                 };
+                
                 bones.Add(boneInfo);
                 matchingIndices.Add(boneIndex);
 
                 if (!boneMapping.TryGetValue(boneInfo.Name, out var boneList)) {
+                    
                     boneList = [];
                     boneMapping[boneInfo.Name] = boneList;
                 }
@@ -359,12 +350,12 @@ internal sealed class ModelData(string path) : SharedData {
                 boneList.Add(boneInfo.Index);
             }
 
-            foreach (var weight in bone.VertexWeights) {
+            foreach (var weight in bone.VertexWeights)
                 boneData[weight.VertexID].AddBoneData(boneIndex, weight.Weight);
-            }
         }
 
-        return new MeshData(
+        return new Mesh(
+            
             vertices,
             normals,
             texCoords,
@@ -373,24 +364,24 @@ internal sealed class ModelData(string path) : SharedData {
             meshIndex,
             boneData,
             mesh.Bones.Count > 0,
-            LoadMaterialDefault());
+            LoadMaterialDefault()
+        );
     }
 
     private static ModelNodeData ProcessNode(Node node) {
 
         var modelNode = new ModelNodeData {
+            
             Name = node.Name,
             Transformation = ToNumericsMatrix(node.Transform),
             RigidTransformation = node.Transform
         };
 
-        foreach (var meshIndex in node.MeshIndices) {
+        foreach (var meshIndex in node.MeshIndices)
             modelNode.MeshIndices.Add(meshIndex);
-        }
 
-        foreach (var child in node.Children) {
+        foreach (var child in node.Children)
             modelNode.Children.Add(ProcessNode(child));
-        }
 
         return modelNode;
     }
@@ -398,6 +389,7 @@ internal sealed class ModelData(string path) : SharedData {
     private static AnimationClipData ProcessAnimation(Animation animation) {
 
         var clip = new AnimationClipData {
+            
             Name = animation.Name,
             TicksPerSecond = animation.TicksPerSecond != 0 ? animation.TicksPerSecond : 25.0
         };
@@ -405,19 +397,23 @@ internal sealed class ModelData(string path) : SharedData {
         var maxTime = 0d;
 
         foreach (var channel in animation.NodeAnimationChannels) {
+            
             var animationChannel = new AnimationChannelData { NodeName = channel.NodeName };
 
             foreach (var key in channel.PositionKeys) {
+                
                 animationChannel.PositionKeys.Add((key.Time, ToNumericsVector(key.Value)));
                 maxTime = Math.Max(maxTime, key.Time);
             }
 
             foreach (var key in channel.RotationKeys) {
+                
                 animationChannel.RotationKeys.Add((key.Time, ToNumericsQuaternion(key.Value)));
                 maxTime = Math.Max(maxTime, key.Time);
             }
 
             foreach (var key in channel.ScalingKeys) {
+                
                 animationChannel.ScaleKeys.Add((key.Time, ToNumericsVector(key.Value)));
                 maxTime = Math.Max(maxTime, key.Time);
             }
@@ -427,6 +423,7 @@ internal sealed class ModelData(string path) : SharedData {
         }
 
         clip.Duration = maxTime > 0 ? maxTime : animation.DurationInTicks;
+        
         return clip;
     }
 
@@ -435,56 +432,48 @@ internal sealed class ModelData(string path) : SharedData {
         const float epsilon = 0.0001f;
 
         return Math.Abs(left.M11 - right.M11) < epsilon
-               && Math.Abs(left.M12 - right.M12) < epsilon
-               && Math.Abs(left.M13 - right.M13) < epsilon
-               && Math.Abs(left.M14 - right.M14) < epsilon
-               && Math.Abs(left.M21 - right.M21) < epsilon
-               && Math.Abs(left.M22 - right.M22) < epsilon
-               && Math.Abs(left.M23 - right.M23) < epsilon
-               && Math.Abs(left.M24 - right.M24) < epsilon
-               && Math.Abs(left.M31 - right.M31) < epsilon
-               && Math.Abs(left.M32 - right.M32) < epsilon
-               && Math.Abs(left.M33 - right.M33) < epsilon
-               && Math.Abs(left.M34 - right.M34) < epsilon
-               && Math.Abs(left.M41 - right.M41) < epsilon
-               && Math.Abs(left.M42 - right.M42) < epsilon
-               && Math.Abs(left.M43 - right.M43) < epsilon
-               && Math.Abs(left.M44 - right.M44) < epsilon;
+            && Math.Abs(left.M12 - right.M12) < epsilon
+            && Math.Abs(left.M13 - right.M13) < epsilon
+            && Math.Abs(left.M14 - right.M14) < epsilon
+            && Math.Abs(left.M21 - right.M21) < epsilon
+            && Math.Abs(left.M22 - right.M22) < epsilon
+            && Math.Abs(left.M23 - right.M23) < epsilon
+            && Math.Abs(left.M24 - right.M24) < epsilon
+            && Math.Abs(left.M31 - right.M31) < epsilon
+            && Math.Abs(left.M32 - right.M32) < epsilon
+            && Math.Abs(left.M33 - right.M33) < epsilon
+            && Math.Abs(left.M34 - right.M34) < epsilon
+            && Math.Abs(left.M41 - right.M41) < epsilon
+            && Math.Abs(left.M42 - right.M42) < epsilon
+            && Math.Abs(left.M43 - right.M43) < epsilon
+            && Math.Abs(left.M44 - right.M44) < epsilon;
     }
 
     private void UpdateAnimationHierarchy(ModelNodeData node, AnimationClipData clip, double time, in Matrix4x4 parentTransform, in Matrix4x4 rigidDriverTransform, in Matrix4x4 globalInverse, Dictionary<string, List<BoneInfoData>> boneMap) {
 
         var nodeTransform = node.Transformation;
 
-        if (clip.ChannelMap.TryGetValue(node.Name, out var channel)) {
+        if (clip.ChannelMap.TryGetValue(node.Name, out var channel))
             nodeTransform = GetInterpolatedTransform(channel, time, node.Transformation);
-        }
 
         var globalTransform = nodeTransform * parentTransform;
         var rigidNodeTransform = node.RigidTransformation;
 
-        if (clip.ChannelMap.TryGetValue(node.Name, out var rigidChannel)) {
+        if (clip.ChannelMap.TryGetValue(node.Name, out var rigidChannel))
             rigidNodeTransform = GetInterpolatedTransform(rigidChannel, time, node.RigidTransformation);
-        }
 
         var rigidGlobalTransform = rigidNodeTransform * rigidDriverTransform;
         var nextRigidDriverTransform = _animatedNodeNames.Contains(node.Name) ? rigidGlobalTransform : rigidDriverTransform;
 
-        foreach (var meshIndex in node.MeshIndices) {
-            if ((uint)meshIndex < (uint)_currentMeshNodeTransforms.Length) {
-                _currentMeshNodeTransforms[meshIndex] = nextRigidDriverTransform;
-            }
-        }
+        foreach (var meshIndex in node.MeshIndices.Where(meshIndex => (uint)meshIndex < (uint)_currentMeshNodeTransforms.Length))
+            _currentMeshNodeTransforms[meshIndex] = nextRigidDriverTransform;
 
-        if (boneMap.TryGetValue(node.Name, out var bones)) {
-            foreach (var bone in bones) {
+        if (boneMap.TryGetValue(node.Name, out var bones))
+            foreach (var bone in bones)
                 bone.FinalTransformation = bone.Offset * globalTransform * globalInverse;
-            }
-        }
 
-        foreach (var child in node.Children) {
+        foreach (var child in node.Children)
             UpdateAnimationHierarchy(child, clip, time, globalTransform, nextRigidDriverTransform, globalInverse, boneMap);
-        }
     }
 
     private void ApplyBindPoseHierarchy(ModelNodeData node, in Matrix4x4 parentTransform, in Matrix4x4 rigidDriverTransform, in Matrix4x4 globalInverse, Dictionary<string, List<BoneInfoData>> boneMap) {
@@ -493,34 +482,29 @@ internal sealed class ModelData(string path) : SharedData {
         var rigidGlobalTransform = node.RigidTransformation * rigidDriverTransform;
         var nextRigidDriverTransform = _animatedNodeNames.Contains(node.Name) ? rigidGlobalTransform : rigidDriverTransform;
 
-        foreach (var meshIndex in node.MeshIndices) {
-            if ((uint)meshIndex < (uint)_currentMeshNodeTransforms.Length) {
-                _currentMeshNodeTransforms[meshIndex] = nextRigidDriverTransform;
-            }
-        }
+        foreach (var meshIndex in node.MeshIndices.Where(meshIndex => (uint)meshIndex < (uint)_currentMeshNodeTransforms.Length))
+            _currentMeshNodeTransforms[meshIndex] = nextRigidDriverTransform;
 
-        if (boneMap.TryGetValue(node.Name, out var bones)) {
-            foreach (var bone in bones) {
+        if (boneMap.TryGetValue(node.Name, out var bones))
+            foreach (var bone in bones)
                 bone.FinalTransformation = bone.Offset * globalTransform * globalInverse;
-            }
-        }
 
-        foreach (var child in node.Children) {
+        foreach (var child in node.Children)
             ApplyBindPoseHierarchy(child, globalTransform, nextRigidDriverTransform, globalInverse, boneMap);
-        }
     }
 
-    private static void SkinMesh(MeshData mesh, List<BoneInfoData> bones) {
+    private static void SkinMesh(Mesh mesh, List<BoneInfoData> bones) {
 
-        if (!mesh.UsesSkinning || mesh.BaseVertices == null || mesh.BaseNormals == null || mesh.AnimatedVertices == null || mesh.AnimatedNormals == null || mesh.BoneData == null) {
+        if (!mesh.UsesSkinning || mesh.BaseVertices == null || mesh.BaseNormals == null || mesh.AnimatedVertices == null || mesh.AnimatedNormals == null || mesh.BoneData == null)
             return;
-        }
 
         Parallel.For(0, mesh.BaseVertices.Length, i => {
+            
             var boneData = mesh.BoneData[i];
             var totalWeight = boneData.Weight0 + boneData.Weight1 + boneData.Weight2 + boneData.Weight3;
 
             if (totalWeight < 0.001f) {
+                
                 mesh.AnimatedVertices[i] = mesh.BaseVertices[i];
                 mesh.AnimatedNormals[i] = mesh.BaseNormals[i];
                 return;
@@ -538,14 +522,15 @@ internal sealed class ModelData(string path) : SharedData {
 
             mesh.AnimatedVertices[i] = finalVertex;
             mesh.AnimatedNormals[i] = finalNormal.LengthSquared() > 0 ? Vector3.Normalize(finalNormal) : mesh.BaseNormals[i];
+            
+            return;
 
             void AccumulateWeight(int boneIndex, float weight) {
 
-                if (weight <= 0) {
-                    return;
-                }
+                if (weight <= 0) return;
 
                 var matrix = bones[boneIndex].FinalTransformation;
+                
                 finalVertex += Vector3.Transform(vertex, matrix) * weight;
                 finalNormal += Vector3.TransformNormal(normal, matrix) * weight;
             }
@@ -554,7 +539,7 @@ internal sealed class ModelData(string path) : SharedData {
         mesh.UploadAnimatedGeometry();
     }
 
-    private void UpdateRigidMesh(MeshData mesh) {
+    private void UpdateRigidMesh(Mesh mesh) {
 
         if (mesh.MeshIndex < 0 ||
             mesh.MeshIndex >= _bindMeshNodeTransforms.Length ||
@@ -569,6 +554,7 @@ internal sealed class ModelData(string path) : SharedData {
         }
 
         for (var i = 0; i < mesh.BaseVertices.Length; i++) {
+            
             mesh.AnimatedVertices[i] = Vector3.Transform(mesh.BaseVertices[i], deltaTransform);
             var transformedNormal = Vector3.TransformNormal(mesh.BaseNormals[i], deltaTransform);
             mesh.AnimatedNormals[i] = transformedNormal.LengthSquared() > 0 ? Vector3.Normalize(transformedNormal) : mesh.BaseNormals[i];
@@ -577,11 +563,9 @@ internal sealed class ModelData(string path) : SharedData {
         mesh.UploadAnimatedGeometry();
     }
 
-    private static void ResetRigidMesh(MeshData mesh) {
+    private static void ResetRigidMesh(Mesh mesh) {
 
-        if (mesh.BaseVertices == null || mesh.BaseNormals == null || mesh.AnimatedVertices == null || mesh.AnimatedNormals == null) {
-            return;
-        }
+        if (mesh.BaseVertices == null || mesh.BaseNormals == null || mesh.AnimatedVertices == null || mesh.AnimatedNormals == null) return;
 
         Array.Copy(mesh.BaseVertices, mesh.AnimatedVertices, mesh.BaseVertices.Length);
         Array.Copy(mesh.BaseNormals, mesh.AnimatedNormals, mesh.BaseNormals.Length);
@@ -591,6 +575,7 @@ internal sealed class ModelData(string path) : SharedData {
     private static Matrix4x4 GetInterpolatedTransform(AnimationChannelData channel, double time, Matrix4x4 bindPose) {
 
         Matrix4x4.Decompose(bindPose, out var bindScale, out var bindRotation, out var bindPosition);
+        
         var position = InterpolatePosition(channel.PositionKeys, time, bindPosition);
         var rotation = InterpolateRotation(channel.RotationKeys, time, bindRotation);
         var scale = InterpolateScale(channel.ScaleKeys, time, bindScale);
@@ -599,21 +584,27 @@ internal sealed class ModelData(string path) : SharedData {
     }
 
     private static Vector3 InterpolatePosition(List<(double Time, Vector3 Position)> keys, double time, Vector3 fallback) =>
+        
         keys.Count switch {
+            
             0 => fallback,
             1 => keys[0].Position,
             _ => Vector3.Lerp(keys[FindKeyIndex(keys, time)].Position, keys[FindNextKeyIndex(keys, time)].Position, GetBlendFactor(keys, time))
         };
 
     private static Quaternion InterpolateRotation(List<(double Time, Quaternion Rotation)> keys, double time, Quaternion fallback) =>
+        
         keys.Count switch {
+            
             0 => fallback,
             1 => keys[0].Rotation,
             _ => Quaternion.Slerp(keys[FindKeyIndex(keys, time)].Rotation, keys[FindNextKeyIndex(keys, time)].Rotation, GetBlendFactor(keys, time))
         };
 
     private static Vector3 InterpolateScale(List<(double Time, Vector3 Scale)> keys, double time, Vector3 fallback) =>
+        
         keys.Count switch {
+            
             0 => fallback,
             1 => keys[0].Scale,
             _ => Vector3.Lerp(keys[FindKeyIndex(keys, time)].Scale, keys[FindNextKeyIndex(keys, time)].Scale, GetBlendFactor(keys, time))
@@ -621,40 +612,28 @@ internal sealed class ModelData(string path) : SharedData {
 
     private static int FindKeyIndex<T>(List<(double Time, T Value)> keys, double time) {
 
-        for (var i = 0; i < keys.Count - 1; i++) {
-            if (time < keys[i + 1].Time) {
+        for (var i = 0; i < keys.Count - 1; i++)
+            if (time < keys[i + 1].Time)
                 return i;
-            }
-        }
 
         return keys.Count - 1;
     }
 
-    private static int FindNextKeyIndex<T>(List<(double Time, T Value)> keys, double time) {
-
-        return (FindKeyIndex(keys, time) + 1) % keys.Count;
-    }
+    private static int FindNextKeyIndex<T>(List<(double Time, T Value)> keys, double time) => (FindKeyIndex(keys, time) + 1) % keys.Count;
 
     private static float GetBlendFactor<T>(List<(double Time, T Value)> keys, double time) {
 
         var current = keys[FindKeyIndex(keys, time)];
         var next = keys[FindNextKeyIndex(keys, time)];
         var length = next.Time - current.Time;
-        if (next.Time <= current.Time) {
-            return 0f;
-        }
-
-        return Math.Clamp((float)((time - current.Time) / length), 0f, 1f);
+        
+        return next.Time <= current.Time ? 0f : Math.Clamp((float)((time - current.Time) / length), 0f, 1f);
     }
 
     private static bool TryBuildRigidDeltaTransform(Matrix4x4 bindTransform, Matrix4x4 currentTransform, out Matrix4x4 deltaTransform) {
 
-        if (!Matrix4x4.Decompose(bindTransform, out _, out var bindRotation, out var bindTranslation)) {
-            deltaTransform = Matrix4x4.Identity;
-            return false;
-        }
-
-        if (!Matrix4x4.Decompose(currentTransform, out _, out var currentRotation, out var currentTranslation)) {
+        if (!Matrix4x4.Decompose(bindTransform, out _, out var bindRotation, out var bindTranslation) || !Matrix4x4.Decompose(currentTransform, out _, out var currentRotation, out var currentTranslation)) {
+            
             deltaTransform = Matrix4x4.Identity;
             return false;
         }
@@ -684,23 +663,19 @@ internal sealed class ModelData(string path) : SharedData {
     private static string NormalizeTextureExtension(string? formatHint, string? filename) {
 
         var extension = Path.GetExtension(filename);
-        if (!string.IsNullOrWhiteSpace(extension)) {
+        
+        if (!string.IsNullOrWhiteSpace(extension))
             return extension.StartsWith('.') ? extension : "." + extension;
-        }
 
-        if (!string.IsNullOrWhiteSpace(formatHint)) {
+        if (!string.IsNullOrWhiteSpace(formatHint))
             return "." + formatHint.Trim().TrimStart('.').ToLowerInvariant();
-        }
 
         return ".png";
     }
 
     private static void RegisterTextureKey(Dictionary<string, TextureData> lookup, string? key, TextureData texture) {
 
-        if (string.IsNullOrWhiteSpace(key)) {
-            return;
-        }
-
+        if (string.IsNullOrWhiteSpace(key)) return;
         lookup[key] = texture;
     }
 }
@@ -718,20 +693,25 @@ internal struct VertexBoneData {
 
     public void AddBoneData(int id, float weight) {
 
-        if (weight <= 0) {
-            return;
-        }
+        if (weight <= 0) return;
 
         if (Weight0 <= 0) {
+            
             Bone0 = id;
             Weight0 = weight;
+            
         } else if (Weight1 <= 0) {
+            
             Bone1 = id;
             Weight1 = weight;
+            
         } else if (Weight2 <= 0) {
+            
             Bone2 = id;
             Weight2 = weight;
+            
         } else if (Weight3 <= 0) {
+            
             Bone3 = id;
             Weight3 = weight;
         }

@@ -37,13 +37,6 @@
 
 namespace {
 
-    struct Float3 {
-
-        float x;
-        float y;
-        float z;
-    };
-
     struct LaunchParams {
         float4 *beauty;
         float4 *accumulation;
@@ -59,10 +52,10 @@ namespace {
         unsigned int textureCount;
         unsigned int imageWidth;
         unsigned int imageHeight;
-        Float3 cameraPosition;
-        Float3 cameraForward;
-        Float3 cameraRight;
-        Float3 cameraUp;
+        float3 cameraPosition;
+        float3 cameraForward;
+        float3 cameraRight;
+        float3 cameraUp;
         float tanHalfFovY;
         NativeRenderSettings settings;
         OptixTraversableHandle iasHandle;
@@ -71,8 +64,8 @@ namespace {
     };
 
     struct MissData {
-        Float3 skyTop;
-        Float3 skyBottom;
+        float3 skyTop;
+        float3 skyBottom;
     };
 
     struct HitGroupData {
@@ -585,14 +578,14 @@ namespace {
         }
 
         void BuildViewProjectionMatrix(const NativeCamera &camera, float *current) {
-            const auto eye = Float3{camera.positionX, camera.positionY, camera.positionZ};
-            const auto target = Float3{camera.targetX, camera.targetY, camera.targetZ};
+            const auto eye = float3{camera.position.x, camera.position.y, camera.position.z};
+            const auto target = float3{camera.target.x, camera.target.y, camera.target.z};
             const auto forward = Normalize(Subtract(target, eye));
-            const auto right = Normalize(Cross(forward, Float3{0.0f, 1.0f, 0.0f}));
+            const auto right = Normalize(Cross(forward, float3{0.0f, 1.0f, 0.0f}));
             const auto up = Normalize(Cross(right, forward));
 
             const auto aspect = static_cast<float>(width_) / static_cast<float>(height_);
-            const auto tanHalfFov = std::tan(camera.fovY * 0.5f * 3.14159265359f / 180.0f);
+            const auto tanHalfFov = std::tan(camera.fov * 0.5f * 3.14159265359f / 180.0f);
             constexpr auto nearPlane = 0.01f;
             constexpr auto farPlane = 1000.0f;
 
@@ -725,8 +718,8 @@ namespace {
                                  cudaMemcpyHostToDevice), "cudaMemcpy(raygenRecord)");
 
             MissRecord missRecord{};
-            missRecord.data.skyTop = Float3{0.55f, 0.72f, 0.95f};
-            missRecord.data.skyBottom = Float3{0.95f, 0.97f, 1.0f};
+            missRecord.data.skyTop = float3{0.55f, 0.72f, 0.95f};
+            missRecord.data.skyBottom = float3{0.95f, 0.97f, 1.0f};
             CheckOptix(optixSbtRecordPackHeader(missProgramGroup_, &missRecord), "optixSbtRecordPackHeader(miss)");
             CheckCuda(cudaMalloc(reinterpret_cast<void **>(&missRecordBuffer_), sizeof(missRecord)),
                       "cudaMalloc(missRecord)");
@@ -1047,12 +1040,12 @@ namespace {
             params.textureCount = static_cast<unsigned int>(textureCount);
             params.imageWidth = static_cast<unsigned int>(width_);
             params.imageHeight = static_cast<unsigned int>(height_);
-            params.cameraPosition = Float3{camera.positionX, camera.positionY, camera.positionZ};
-            const Float3 target = Float3{camera.targetX, camera.targetY, camera.targetZ};
+            params.cameraPosition = float3{camera.position.x, camera.position.y, camera.position.z};
+            const auto target = float3{camera.target.x, camera.target.y, camera.target.z};
             params.cameraForward = Normalize(Subtract(target, params.cameraPosition));
-            params.cameraRight = Normalize(Cross(params.cameraForward, Float3{0.0f, 1.0f, 0.0f}));
+            params.cameraRight = Normalize(Cross(params.cameraForward, float3{0.0f, 1.0f, 0.0f}));
             params.cameraUp = Normalize(Cross(params.cameraRight, params.cameraForward));
-            params.tanHalfFovY = std::tan(camera.fovY * 0.5f * 3.14159265359f / 180.0f);
+            params.tanHalfFovY = std::tan(camera.fov * 0.5f * 3.14159265359f / 180.0f);
             params.settings = settings;
             params.iasHandle = iasHandle;
             params.frameIndex = frameIndex;
@@ -1226,22 +1219,22 @@ namespace {
             }
         }
 
-        static Float3 Subtract(Float3 left, Float3 right) {
-            return Float3{left.x - right.x, left.y - right.y, left.z - right.z};
+        static float3 Subtract(float3 left, float3 right) {
+            return float3{left.x - right.x, left.y - right.y, left.z - right.z};
         }
 
-        static Float3 Cross(Float3 left, Float3 right) {
-            return Float3{
+        static float3 Cross(float3 left, float3 right) {
+            return float3{
                 left.y * right.z - left.z * right.y,
                 left.z * right.x - left.x * right.z,
                 left.x * right.y - left.y * right.x,
             };
         }
 
-        static Float3 Normalize(Float3 value) {
+        static float3 Normalize(float3 value) {
             const auto length = std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
             const auto inverse = length > 1e-8f ? 1.0f / static_cast<float>(length) : 0.0f;
-            return Float3{value.x * inverse, value.y * inverse, value.z * inverse};
+            return float3{value.x * inverse, value.y * inverse, value.z * inverse};
         }
 
         static void MultiplyMatrices(const float *left, const float *right, float *out) {

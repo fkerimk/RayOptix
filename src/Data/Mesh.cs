@@ -1,8 +1,9 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Raylib_cs;
+using static System.Guid;
 
-internal class MeshData : SharedData {
+internal class Mesh : SharedData {
 
     public readonly int VertexCount;
     public readonly int TriangleCount;
@@ -20,9 +21,10 @@ internal class MeshData : SharedData {
     public readonly VertexBoneData[]? BoneData;
     public readonly bool UsesSkinning;
 
-    public Material? FallbackMaterial;
-    public Mesh? RaylibMesh;
-    public MeshData(int vertexCount, int triangleCount, float[] vertices, float[] normals, float[] texCoords, uint[] indices) {
+    public Raylib_cs.Material? FallbackMaterial;
+    public Raylib_cs.Mesh? RaylibMesh;
+    
+    public Mesh(int vertexCount, int triangleCount, float[] vertices, float[] normals, float[] texCoords, uint[] indices) : base("mesh_" + NewGuid()) {
 
         VertexCount = vertexCount;
         TriangleCount = triangleCount;
@@ -32,9 +34,12 @@ internal class MeshData : SharedData {
         Indices = indices;
         MaterialIndex = -1;
         MeshIndex = -1;
+        
+        Build();
     }
 
-    public MeshData(
+    public Mesh (
+        
         Vector3[] vertices,
         Vector3[] normals,
         Vector2[] texCoords,
@@ -43,7 +48,9 @@ internal class MeshData : SharedData {
         int meshIndex,
         VertexBoneData[] boneData,
         bool usesSkinning,
-        Material fallbackMaterial) {
+        Raylib_cs.Material fallbackMaterial
+        
+    ) : base("mesh_" + NewGuid()) {
 
         VertexCount = vertices.Length;
         TriangleCount = indices.Length / 3;
@@ -61,13 +68,15 @@ internal class MeshData : SharedData {
         BoneData = boneData;
         UsesSkinning = usesSkinning;
         FallbackMaterial = fallbackMaterial;
+        
+        Build();
     }
 
     protected override void BuildRaylib() {
 
         UnloadRaylib();
 
-        var mesh = new Mesh(VertexCount, TriangleCount);
+        var mesh = new Raylib_cs.Mesh(VertexCount, TriangleCount);
 
         mesh.AllocVertices();
         mesh.AllocNormals();

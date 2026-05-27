@@ -23,18 +23,6 @@ internal struct OptixFrameStats {
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal readonly struct OptixCamera(float positionX, float positionY, float positionZ, float targetX, float targetY, float targetZ, float fovY) {
-
-    public readonly float PositionX = positionX;
-    public readonly float PositionY = positionY;
-    public readonly float PositionZ = positionZ;
-    public readonly float TargetX = targetX;
-    public readonly float TargetY = targetY;
-    public readonly float TargetZ = targetZ;
-    public readonly float FovY = fovY;
-}
-
-[StructLayout(LayoutKind.Sequential)]
 internal readonly struct OptixRenderSettings(
     int samplesPerPixel,
     int maxBounces,

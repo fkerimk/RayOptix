@@ -2,14 +2,18 @@
 
 #include <cstdint>
 
+struct NativeFloat3 {
+
+    float x;
+    float y;
+    float z;
+};
+
 struct NativeCamera {
-    float positionX;
-    float positionY;
-    float positionZ;
-    float targetX;
-    float targetY;
-    float targetZ;
-    float fovY;
+    
+    NativeFloat3 position;
+    NativeFloat3 target;
+    float fov;
 };
 
 struct NativeRenderSettings {

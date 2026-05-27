@@ -1,152 +1,43 @@
 ﻿using System.Numerics;
-using Raylib_cs;
-using static Raylib_cs.Raylib;
+using static Time;
+using static Util;
+using static Input;
+using static Render;
+using static Primitives;
+using static Button;
 
-internal static class Program {
+Setup(new Vector3(-5, 5, 5), Vector3.Zero);
 
-    private const float MoveSpeed = 6.0f;
-    private const float MouseSensitivity = 0.0035f;
-    private const float PitchLimit = 1.55f;
+FreeCam.Init();
 
-    private static void Main(string[] args) {
+var cubeMesh = PrimitiveMeshCube(1);
 
-        SetConfigFlags(ConfigFlags.ResizableWindow | ConfigFlags.VSyncHint);
-        SetTraceLogLevel(TraceLogLevel.Error);
-        InitWindow(1280, 720, "RayOptix");
-        SetWindowMonitor(0);
+var floorMaterial = new Material(color: new Vector4(0.78f, 0.73f, 0.66f, 1));
+var wallMaterial = new Material(color: new Vector4(0.55f, 0.70f, 0.82f, 1), reflectivity: 1);
+var cubeMaterial = new Material(color: new Vector4(0.92f, 0.36f, 0.24f, 1));
 
-        var camera = new CameraData(new Vector3(-5, 5, 5), Vector3.Zero, 60);
-        camera.Build();
+var human = new Model("res/model/human.glb");
 
-        var initialForward = Vector3.Normalize(camera.Target - camera.Position);
-        var yaw = MathF.Atan2(initialForward.Z, initialForward.X);
-        var pitch = MathF.Asin(initialForward.Y);
-        
-        var surfaceMesh = Primitive.Mesh.Cube(5, 0.25f, 5);
-        surfaceMesh.Build();
-        
-        var floorMaterial = new MaterialData { Color = new Vector4(0.78f, 0.73f, 0.66f, 1) };
-        floorMaterial.Build();
+while (IsAlive) {
 
-        var wallMaterial = new MaterialData { Color = new Vector4(0.55f, 0.70f, 0.82f, 1), Reflectivity = 0.9f };
-        wallMaterial.Build();
-        
-        var cubeMesh = Primitive.Mesh.Cube(1);
-        cubeMesh.Build();
-        
-        var cubeMaterial = new MaterialData { Color = new Vector4(0.92f, 0.36f, 0.24f, 1) };
-        cubeMaterial.Build();
+    FreeCam.Update();
+    
+    human.UpdateAnimation(DeltaTime);
+    
+    if (IsButtonPressed(KeyBoardSpace))
+        ActiveRenderer = ActiveRenderer is OptixRenderer ? Render.RaylibRenderer : Render.OptixRenderer;
 
-        var robotModel = new ModelData("res/model/robot.fbx") {
-            Position = new Vector3(0, 5, 0),
-            RotationDegrees = new Vector3(0, 180, 0),
-            Scale = Vector3.One * 0.01f
-        };
-        robotModel.Build();
+    Start();
+    
+    DrawMesh(cubeMesh, floorMaterial, new Vector3(0, -0.125f, 0), Vector3.Zero, new Vector3(5, 0.25f, 5));
+    DrawMesh(cubeMesh, wallMaterial, new Vector3(2.5f - 0.125f, 2.5f, 0), new Vector3(90, 0, 0), new Vector3(5, 0.25f, 5));
+    DrawMesh(cubeMesh, wallMaterial, new Vector3(0, 2.5f, -2.5f + 0.125f), new Vector3(90, 0, 90), new Vector3(5, 0.25f, 5));
+    DrawMesh(cubeMesh, cubeMaterial, new Vector3(0, MathF.Sin(TotalTime) + 3.5f, -1), new Vector3(0,  TotalTime * 90, 0), Vector3.One);
+    DrawMesh(cubeMesh, cubeMaterial, new Vector3(0, MathF.Cos(TotalTime) + 3.5f,  1), new Vector3(0, -TotalTime * 90, 0), Vector3.One);
 
-        var raylibRenderer = new RaylibRenderer(camera);
-        var optixRenderer = new OptixRenderer(camera);
-
-        Renderer[] renderers = [raylibRenderer, optixRenderer];
-        
-        var activeRendererIndex = 0;
-        var activeRenderer = renderers[activeRendererIndex];
-
-        foreach (var renderer in renderers) renderer.Init();
-        
-        while (!WindowShouldClose()) {
-
-            if (IsMouseButtonPressed(MouseButton.Right)) DisableCursor();
-            if (IsMouseButtonReleased(MouseButton.Right)) EnableCursor();
-
-            if (IsMouseButtonDown(MouseButton.Right)) {
-
-                var mouseDelta = GetMouseDelta();
-                yaw += mouseDelta.X * MouseSensitivity;
-                pitch -= mouseDelta.Y * MouseSensitivity;
-                pitch = Math.Clamp(pitch, -PitchLimit, PitchLimit);
-
-                var forward = GetForward(yaw, pitch);
-                var right = Vector3.Normalize(Vector3.Cross(forward, Vector3.UnitY));
-                var move = Vector3.Zero;
-
-                if (IsKeyDown(KeyboardKey.W)) move += forward;
-                if (IsKeyDown(KeyboardKey.S)) move -= forward;
-                if (IsKeyDown(KeyboardKey.D)) move += right;
-                if (IsKeyDown(KeyboardKey.A)) move -= right;
-                if (IsKeyDown(KeyboardKey.E)) move += Vector3.UnitY;
-                if (IsKeyDown(KeyboardKey.Q)) move -= Vector3.UnitY;
-
-                if (move != Vector3.Zero) {
-
-                    move = Vector3.Normalize(move) * (MoveSpeed * GetFrameTime());
-                    camera.Position += move;
-                }
-
-                camera.Target = camera.Position + forward;
-            }
-
-            camera.Fov -= GetMouseWheelMove() * 5;
-            
-            camera.Build();
-            robotModel.UpdateAnimation(GetFrameTime());
-            
-            if (IsKeyPressed(KeyboardKey.Space)) {
-
-                activeRendererIndex = (activeRendererIndex + 1) % renderers.Length;
-                activeRenderer = renderers[activeRendererIndex];
-            }
-
-            BeginDrawing();
-
-            ClearBackground(Color.DarkGray);
-
-            activeRenderer.Begin();
-            
-            activeRenderer.DrawMesh(surfaceMesh, floorMaterial, TransformMatrix(new Vector3(0, -0.125f, 0), Vector3.Zero, Vector3.One));
-            activeRenderer.DrawMesh(surfaceMesh, wallMaterial, TransformMatrix(new Vector3(2.5f - 0.125f, 2.5f - 0.125f, 0), new Vector3(90, 0, 0), Vector3.One));
-
-            //for (int i = 0; i < 128; i++) { // performance test
-            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(0, MathF.Sin((float)GetTime()) + 2.5f, -1), new Vector3(0,  (float)GetTime() * 90, 0), Vector3.One));
-            activeRenderer.DrawMesh(cubeMesh, cubeMaterial, TransformMatrix(new Vector3(0, MathF.Cos((float)GetTime()) + 2.5f,  1), new Vector3(0, -(float)GetTime() * 90, 0), Vector3.One));
-            //}
-
-            if (activeRenderer is RaylibRenderer) {
-                robotModel.DrawRaylib();
-            }
-            
-            activeRenderer.End();
-            
-            DrawText($"Renderer: {activeRenderer.Name}", 10, 10, 32, Color.Orange);
-
-            DrawFPS(10, GetScreenHeight() - 32);
-            
-            EndDrawing();
-        }
-
-        cubeMaterial.Unload();
-        cubeMesh.Unload();
-        robotModel.Unload();
-        
-        foreach (var renderer in renderers) renderer.Shutdown();
-        
-        CloseWindow();
-    }
-
-    private static Matrix4x4 TransformMatrix(Vector3 position, Vector3 rotation, Vector3 scale) {
-
-        var positionMatrix = Raymath.MatrixTranslate(position.X, position.Y, position.Z);
-        var rotationMatrix = Raymath.QuaternionToMatrix(Raymath.QuaternionFromEuler(rotation.Z * DEG2RAD, rotation.Y * DEG2RAD, rotation.X * DEG2RAD));
-        var scaleMatrix = Raymath.MatrixScale(scale.X, scale.Y, scale.Z);
-        
-        return Raymath.MatrixMultiply(Raymath.MatrixMultiply(scaleMatrix, rotationMatrix), positionMatrix);
-    }
-
-    private static Vector3 GetForward(float yaw, float pitch) {
-
-        return Vector3.Normalize(new Vector3(
-            MathF.Cos(pitch) * MathF.Cos(yaw),
-            MathF.Sin(pitch),
-            MathF.Cos(pitch) * MathF.Sin(yaw)));
-    }
+    SpiralRotation((pos, angle) => DrawModel(human,  new Vector3(pos.X, 0, pos.Y),  Vector3.UnitY * angle, Vector3.One), spiral: 100);
+    
+    Stop();
 }
+
+Shutdown();

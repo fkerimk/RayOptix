@@ -2,8 +2,8 @@ using System.Numerics;
 using Raylib_cs;
 using static Raylib_cs.Raylib;
 
-internal class RaylibRenderer(CameraData cameraData) : Renderer {
-
+internal class RaylibRenderer(Camera mainCamera) : Renderer(mainCamera) {
+    
     private RenderTexture2D _renderTexture;
     private int _renderWidth;
     private int _renderHeight;
@@ -19,10 +19,9 @@ internal class RaylibRenderer(CameraData cameraData) : Renderer {
     public override void Begin() {
 
         EnsureTextureSize();
-
         BeginTextureMode(_renderTexture);
         ClearBackground(Color.DarkGray);
-        BeginMode3D(cameraData.RaylibCamera!.Value);
+        BeginMode3D(new Camera3D(MainCamera.Position, MainCamera.Target, Vector3.UnitY, MainCamera.Fov, CameraProjection.Perspective));
     }
 
     public override void End() {
@@ -47,24 +46,20 @@ internal class RaylibRenderer(CameraData cameraData) : Renderer {
         UnloadRenderTexture(_renderTexture);
     }
 
-    public override void DrawMesh(MeshData meshData, MaterialData materialData, Matrix4x4 matrix) {
+    public override void DrawMesh(Mesh mesh, Material material, Matrix4x4 matrix) {
 
-        Raylib.DrawMesh(meshData.RaylibMesh!.Value, materialData.RaylibMaterial!.Value, matrix);
+        Raylib.DrawMesh(mesh.RaylibMesh!.Value, material.RaylibMaterial!.Value, matrix);
     }
 
-    public override void DrawModel(ModelData modelData, Vector3 position, Vector3 rotation, Vector3 scale) {
-        var transform = Util.TransformMatrix(
-            modelData.Position + position,
-            modelData.RotationDegrees + rotation,
-            new Vector3(modelData.Scale.X * scale.X, modelData.Scale.Y * scale.Y, modelData.Scale.Z * scale.Z));
+    public override void DrawModel(Model model, Matrix4x4 matrix) {
 
-        foreach (var mesh in modelData.Meshes) {
-            var material = mesh.MaterialIndex >= 0 && mesh.MaterialIndex < modelData.Materials.Count && modelData.Materials[mesh.MaterialIndex].RaylibMaterial.HasValue
-                ? modelData.Materials[mesh.MaterialIndex].RaylibMaterial!.Value
+        foreach (var mesh in model.Meshes) {
+            var material = mesh.MaterialIndex >= 0 && mesh.MaterialIndex < model.Materials.Count && model.Materials[mesh.MaterialIndex].RaylibMaterial.HasValue
+                ? model.Materials[mesh.MaterialIndex].RaylibMaterial!.Value
                 : mesh.FallbackMaterial;
 
             if (mesh.RaylibMesh.HasValue && material.HasValue) {
-                Raylib.DrawMesh(mesh.RaylibMesh.Value, material.Value, transform);
+                Raylib.DrawMesh(mesh.RaylibMesh.Value, material.Value, matrix);
             }
         }
     }

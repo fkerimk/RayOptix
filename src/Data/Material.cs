@@ -1,14 +1,30 @@
 using System.Numerics;
 using Raylib_cs;
 
-internal unsafe class MaterialData : SharedData {
+internal unsafe class Material : SharedData {
 
-    public Vector4 Color = new(1, 1, 1, 1);
-    public Vector4 EmissiveColor = Vector4.Zero;
-    public float Reflectivity = 0;
+    public Vector4 Color;
+    public Vector4 EmissiveColor;
+    public float Reflectivity;
+    
     public readonly Dictionary<MaterialMapIndex, TextureData> Textures = [];
     
-    public Material? RaylibMaterial;
+    public Raylib_cs.Material? RaylibMaterial;
+
+    public Material(
+        
+        Vector4? color = null,
+        Vector4? emissiveColor = null,
+        float? reflectivity = null
+        
+    ) : base("mat_" + Guid.NewGuid()) {
+        
+        Color = color ?? Vector4.One;
+        EmissiveColor = emissiveColor ?? Vector4.Zero;
+        Reflectivity = reflectivity ?? 0;
+        
+        Build();
+    }
 
     protected override void BuildRaylib() {
 
@@ -20,13 +36,12 @@ internal unsafe class MaterialData : SharedData {
         material.Maps[(int)MaterialMapIndex.Emission].Color = ToColor(EmissiveColor);
 
         foreach (var (mapIndex, textureData) in Textures) {
-            if (!textureData.RaylibTexture.HasValue) {
+            
+            if (!textureData.RaylibTexture.HasValue)
                 textureData.Build();
-            }
 
-            if (textureData.RaylibTexture.HasValue) {
+            if (textureData.RaylibTexture.HasValue)
                 material.Maps[(int)mapIndex].Texture = textureData.RaylibTexture.Value;
-            }
         }
         
         RaylibMaterial = material;
@@ -47,12 +62,6 @@ internal unsafe class MaterialData : SharedData {
 
         Raylib.UnloadMaterial(material);
         RaylibMaterial = null;
-    }
-
-    protected override void BuildOptix() {
-    }
-
-    protected override void UnloadOptix() {
     }
 
     public TextureData? GetTexture(MaterialMapIndex mapIndex) {
